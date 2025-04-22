@@ -1,0 +1,5 @@
+streamlit
+pymongo
+unidecode
+Flask==2.2.2
+SQLAlchemy==1.4.39
