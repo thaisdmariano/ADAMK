@@ -5,17 +5,24 @@ import json
 import os
 import re
 import sys
+import readline
 
 SUB_FILE = "subconsciente.json"
 INC_FILE = "inconsciente.json"
 
 
-# ————— Utilitário de Inline-Edit (Windows-Friendly) —————
+# ————— Utilitário de Inline-Edit —————
 
 def input_prefill(prompt, text):
-    """Exibe o texto atual entre colchetes e, se o usuário apertar Enter, mantém o original."""
-    entrada = input(f"{prompt} [{text}]: ").strip()
-    return entrada or text
+    """Exibe o texto atual já preenchido no prompt para edição inline."""
+    def hook():
+        readline.insert_text(text)
+        readline.redisplay()
+    readline.set_pre_input_hook(hook)
+    try:
+        return input(prompt)
+    finally:
+        readline.set_pre_input_hook(None)
 
 
 # ————— Carregamento / Salvamento —————
@@ -72,7 +79,7 @@ def edit_inconsciente():
         return
     i = int(idx) - 1
     old = textos[i]
-    novo = input_prefill("Novo texto", old)
+    novo = input_prefill("Novo texto: ", old).strip()
     if not novo:
         print("Cancelado.")
         return
@@ -179,7 +186,7 @@ def create_entrada_block(data, mae_id, texto):
     fim_ent = toks["TOTAL"][-1]
 
     bloco = {
-        "bloco_id": len(mae["blocos"]) + 1,
+        "bloco_id": len(mae["blocos"])+1,
         "entrada": {
             "texto": texto,
             "reacao": re_ent,
@@ -199,7 +206,7 @@ def add_saida_to_block(data, mae_id, bloco, last_idx, sugestoes):
         return last_idx
 
     print("\nSugestões para SAÍDA:")
-    for i, s in enumerate(saidas, 1):
+    for i, s in enumerate(saidas,1):
         print(f" {i}. {s}")
 
     i = 0
@@ -207,19 +214,22 @@ def add_saida_to_block(data, mae_id, bloco, last_idx, sugestoes):
         seg = saidas[i]
         print(f"\n--- Saída Sugestão {i+1}/{len(saidas)} ---")
         print(seg)
-        op = input("(i)nput / (e)dit / (r)eject / (q)quit > ").lower().strip()
-        if op == "q":
+        op = input("(i)nput / (e)ditar / (r)ejetar / (q)quit > ").lower().strip()
+        if op=="q":
             break
-        if op == "e":
+        if op=="e":
             old = saidas[i]
-            nova = input_prefill("Novo texto saída", old)
-            saidas[i] = nova
-            print("Texto de saída atualizado.")
+            nova = input_prefill(" Novo texto: ", old).strip()
+            if nova:
+                saidas[i] = nova
+                print("Texto de saída atualizado.")
+            else:
+                print("Mantido o original.")
             continue
-        if op == "r":
+        if op=="r":
             i += 1
             continue
-        if op == "i":
+        if op=="i":
             re_sai  = input("Reação (saída): ").strip()
             ctx_sai = input("Contexto (saída): ").strip()
             aln_sai = calcular_alnulu(seg)
@@ -251,7 +261,7 @@ def process_flow(data):
     list_inconsciente()
     esc = input("\nSelecione ID do texto (enter=último): ").strip()
 
-    if esc == "" or esc == "0":
+    if esc=="" or esc=="0":
         if inconsc:
             texto = inconsc[-1]
             print(f"\nUsando texto mais recente:\n{texto}")
@@ -264,7 +274,7 @@ def process_flow(data):
             save_inconsciente(inconsc)
             print("🧠 Texto salvo.")
     elif esc.isdigit() and 1 <= int(esc) <= len(inconsc):
-        texto = inconsc[int(esc) - 1]
+        texto = inconsc[int(esc)-1]
         print(f"\nUsando texto #{esc}:\n{texto}")
     else:
         print("ID inválido.")
@@ -277,16 +287,19 @@ def process_flow(data):
 
     for i, s in enumerate(sugestoes, 1):
         print(f"\nTrecho: {s}")
-        op = input("(i)nput / (e)dit / (r)eject / (q)quit > ").lower().strip()
+        op = input("(i)nput / (e)dit / (r)ej / (q)quit > ").lower().strip()
         if op == "q":
             break
         if op == "r":
             continue
         if op == "e":
-            old = sugestoes[i - 1]
-            nova = input_prefill("Novo texto trecho", old)
-            sugestoes[i - 1] = nova
-            print("Texto atualizado.")
+            old = sugestoes[i-1]
+            nova = input_prefill(" Novo texto: ", old).strip()
+            if nova:
+                sugestoes[i-1] = nova
+                print("Texto atualizado.")
+            else:
+                print("Mantido o original.")
             continue
         if op == "i":
             bloco, last_e = create_entrada_block(data, mae_id, s)
@@ -315,7 +328,7 @@ def list_blocos(data):
     print(f"\nBlocos de '{mae['nome']}':")
     for b in blocos:
         ent = b["entrada"]["texto"]
-        sai = b["saida"].get("texto", "")
+        sai = b["saida"].get("texto","")
         print(f" #{b['bloco_id']} → ENTRADA: {ent} | SAÍDA: {sai}")
 
 def edit_bloco(data):
@@ -330,21 +343,18 @@ def edit_bloco(data):
     if not bloco:
         print("Bloco não existe.")
         return
-
     part = input("Editar (e)ntrada ou (s)aída? ").lower().strip()
-    if part not in ("e", "s"):
+    if part not in ("e","s"):
         print("Inválido.")
         return
     key = "entrada" if part == "e" else "saida"
-
     campo = input("Campo (t)exto/(r)eação/(c)onteúdo? ").lower().strip()
-    m = {"t": "texto", "r": "reacao", "c": "contexto"}.get(campo)
+    m = {"t":"texto","r":"reacao","c":"contexto"}.get(campo)
     if not m:
         print("Inválido.")
         return
-
     old = bloco[key][m]
-    novo = input_prefill(f"Novo valor para {key}.{m}", old)
+    novo = input_prefill(f"Novo valor para {key}.{m}: ", old).strip()
     if novo:
         bloco[key][m] = novo
         print("✅ Atualizado.")
