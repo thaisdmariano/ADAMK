@@ -13,7 +13,6 @@ INC_FILE = "inconsciente.json"
 # ————— Utilitário de Inline-Edit —————
 
 def input_prefill(prompt, text):
-    """Exibe o texto atual já preenchido no prompt para edição inline."""
     def hook():
         readline.insert_text(text)
         readline.redisplay()
@@ -64,6 +63,16 @@ def list_inconsciente():
     for i, t in enumerate(textos, 1):
         print(f" {i}. {t}")
 
+def add_inconsciente():
+    texto = input("\nDigite o novo texto para o inconsciente:\n> ").strip()
+    if not texto:
+        print("⚠ Cancelado.")
+        return
+    textos = load_inconsciente()
+    textos.append(texto)
+    save_inconsciente(textos)
+    print("🧠 Texto adicionado ao inconsciente.")
+
 def edit_inconsciente():
     textos = load_inconsciente()
     if not textos:
@@ -76,9 +85,9 @@ def edit_inconsciente():
         return
     i = int(idx) - 1
     old = textos[i]
-    novo = input_prefill("Novo texto: ", old).strip()
+    novo = input_prefill(" Novo texto: ", old).strip()
     if not novo:
-        print("Cancelado.")
+        print("⚠ Cancelado.")
         return
     textos[i] = novo
     save_inconsciente(textos)
@@ -109,12 +118,26 @@ def list_maes(data):
 def add_mae(data):
     nome = input("\nNome da nova mãe: ").strip()
     if not nome:
-        print("Cancelado.")
+        print("⚠ Cancelado.")
         return
     ids = list(map(int, data["maes"].keys()))
     novo = str(max(ids) + 1)
     data["maes"][novo] = {"nome": nome, "ultimo_child": 0, "blocos": []}
     print(f"Mãe '{nome}' adicionada com ID={novo}.")
+
+def remove_mae(data):
+    list_maes(data)
+    mid = input("\nID da mãe a remover: ").strip()
+    if mid not in data["maes"]:
+        print("Mãe não encontrada.")
+        return data
+    confirm = input(f"Confirma remoção de '{data['maes'][mid]['nome']}'? (s/N): ").lower()
+    if confirm != 's':
+        print("⚠ Cancelado.")
+        return data
+    data["maes"].pop(mid)
+    print(f"✅ Mãe '{mid}' removida.")
+    return data
 
 def select_mae(data):
     chaves = list(data["maes"].keys())
@@ -129,20 +152,16 @@ def segment_text(texto):
     return [p.strip() for p in partes if p.strip()]
 
 def calcular_alnulu(texto):
-    mapa = {
-        'A':1,'B':2,'C':3,'D':4,'E':5,'F':6,'G':7,'H':8,'I':9,
-        'J':-10,'K':11,'L':12,'M':-13,'N':14,'O':15,'P':16,
-        'Q':17,'R':18,'S':19,'T':20,'U':21,'V':-22,'W':23,
-        'X':24,'Y':-25,'Z':26,'.':2,'!':3,'?':4,',':1,';':1,':':1,'-':1,
-        '0':0,'1':1,'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9
-    }
-    equiv = {
-        'Á':'A','À':'A','Â':'A','Ã':'A','Ä':'A',
-        'É':'E','Ê':'E','È':'E',
-        'Í':'I','Ì':'I','Î':'I',
-        'Ó':'O','Ò':'O','Ô':'O','Õ':'O','Ö':'O',
-        'Ú':'U','Ù':'U','Û':'U','Ü':'U','Ç':'C','Ñ':'N'
-    }
+    mapa = { 'A':1,'B':2,'C':3,'D':4,'E':5,'F':6,'G':7,'H':8,'I':9,
+             'J':-10,'K':11,'L':12,'M':-13,'N':14,'O':15,'P':16,
+             'Q':17,'R':18,'S':19,'T':20,'U':21,'V':-22,'W':23,
+             'X':24,'Y':-25,'Z':26,'.':2,'!':3,'?':4,',':1,';':1,':':1,'-':1,
+             '0':0,'1':1,'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9 }
+    equiv = { 'Á':'A','À':'A','Â':'A','Ã':'A','Ä':'A',
+              'É':'E','Ê':'E','È':'E',
+              'Í':'I','Ì':'I','Î':'I',
+              'Ó':'O','Ò':'O','Ô':'O','Õ':'O','Ö':'O',
+              'Ú':'U','Ù':'U','Û':'U','Ü':'U','Ç':'C','Ñ':'N' }
     total = 0
     for c in texto.upper():
         c = equiv.get(c, c)
@@ -153,7 +172,7 @@ def get_last_index(mae):
     last = 0
     for b in mae["blocos"]:
         for part in ("entrada", "saida"):
-            for tok in b[part]["tokens"]["TOTAL"]:
+            for tok in b.get(part, {}).get("tokens", {}).get("TOTAL", []):
                 idx = int(tok.split('.')[1])
                 last = max(last, idx)
     return last
@@ -168,11 +187,11 @@ def generate_tokens(mae_id, start, e_cnt, re_cnt, ce_cnt):
     return {"E":E, "RE":RE, "CE":CE, "TOTAL":TOTAL}, last_idx
 
 def create_entrada_block(data, mae_id, texto):
-    mae = data["maes"][mae_id]
-    re_ent  = input("Reação (entrada): ").strip()
-    ctx_ent = input("Contexto (entrada): ").strip()
-    aln_ent = calcular_alnulu(texto)
-    last0   = get_last_index(mae)
+    mae    = data["maes"][mae_id]
+    re_ent = input("Reação (entrada): ").strip()
+    ctx_ent= input("Contexto (entrada): ").strip()
+    aln_ent= calcular_alnulu(texto)
+    last0  = get_last_index(mae)
 
     e_cnt  = len(re.findall(r'\S+', texto))
     re_cnt = len(re.findall(r'\S+', re_ent))
@@ -182,7 +201,7 @@ def create_entrada_block(data, mae_id, texto):
     fim_ent = toks["TOTAL"][-1]
 
     bloco = {
-        "bloco_id": len(mae["blocos"])+1,
+        "bloco_id": len(mae["blocos"]) + 1,
         "entrada": {
             "texto": texto,
             "reacao": re_ent,
@@ -202,7 +221,7 @@ def add_saida_to_block(data, mae_id, bloco, last_idx, sugestoes):
         return last_idx
 
     print("\nSugestões para SAÍDA:")
-    for i, s in enumerate(saidas,1):
+    for i, s in enumerate(saidas, 1):
         print(f" {i}. {s}")
 
     i = 0
@@ -215,7 +234,7 @@ def add_saida_to_block(data, mae_id, bloco, last_idx, sugestoes):
             break
         if op == "e":
             old = saidas[i]
-            nova = input_prefill(" Novo texto: ", old).strip()
+            nova= input_prefill(" Novo texto: ", old).strip()
             if nova:
                 saidas[i] = nova
                 print(f"✅ Texto de saída atualizado: {nova}")
@@ -227,8 +246,8 @@ def add_saida_to_block(data, mae_id, bloco, last_idx, sugestoes):
             continue
         if op == "i":
             re_sai  = input("Reação (saída): ").strip()
-            ctx_sai = input("Contexto (saída): ").strip()
-            aln_sai = calcular_alnulu(seg)
+            ctx_sai= input("Contexto (saída): ").strip()
+            aln_sai= calcular_alnulu(seg)
 
             s_cnt  = len(re.findall(r'\S+', seg))
             rs_cnt = len(re.findall(r'\S+', re_sai))
@@ -292,10 +311,9 @@ def process_flow(data):
         if op == "r":
             continue
 
-        # EDIÇÃO: após editar, trata como input
         if op == "e":
             old = sugestoes[i-1]
-            nova = input_prefill(" Novo texto: ", old).strip()
+            nova= input_prefill(" Novo texto: ", old).strip()
             texto_sel = nova if nova else old
             sugestoes[i-1] = texto_sel
             print(f"✅ Texto atualizado: {texto_sel}")
@@ -307,7 +325,6 @@ def process_flow(data):
             print(f"✅ Bloco #{bloco['bloco_id']} salvo.")
             continue
 
-        # INPUT direto
         if op == "i":
             bloco, last_e = create_entrada_block(data, mae_id, trecho)
             last_full = add_saida_to_block(data, mae_id, bloco, last_e, sugestoes)
@@ -354,19 +371,19 @@ def edit_bloco(data):
     if part not in ("e", "s"):
         print("Inválido.")
         return
-    key = "entrada" if part == "e" else "saida"
+    key   = "entrada" if part == "e" else "saida"
     campo = input("Campo (t)exto/(r)eação/(c)onteúdo? ").lower().strip()
-    m = {"t":"texto", "r":"reacao", "c":"contexto"}.get(campo)
+    m     = {"t":"texto", "r":"reacao", "c":"contexto"}.get(campo)
     if not m:
         print("Inválido.")
         return
     old = bloco[key][m]
-    novo = input_prefill(f"Novo valor para {key}.{m}: ", old).strip()
+    novo= input_prefill(f" Novo valor para {key}.{m}: ", old).strip()
     if novo:
         bloco[key][m] = novo
         print("✅ Atualizado.")
     else:
-        print("Cancelado.")
+        print("⚠ Cancelado.")
 
 def remove_bloco(data):
     list_blocos(data)
@@ -386,14 +403,48 @@ def remove_bloco(data):
     data["maes"][mid]["ultimo_child"] = get_last_index(data["maes"][mid])
     print("✅ Bloco removido.")
 
+def remove_blocks_sequence(data):
+    list_maes(data)
+    mid = input("\nID da mãe para remover sequência de blocos: ").strip()
+    if mid not in data["maes"]:
+        print("Mãe não encontrada.")
+        return data
+    mae = data["maes"][mid]
+    if not mae["blocos"]:
+        print("Nenhum bloco para remover.")
+        return data
+    list_blocos(data)
+    seq = input("\nInforme intervalo de blocos (início-fim, ex '2-5'): ").strip()
+    m = re.match(r'^(\d+)-(\d+)$', seq)
+    if not m:
+        print("Formato inválido.")
+        return data
+    start, end = map(int, m.groups())
+    if start > end:
+        print("Intervalo inválido.")
+        return data
+    removed = [b["bloco_id"] for b in mae["blocos"] if start <= b["bloco_id"] <= end]
+    if not removed:
+        print("Nenhum bloco nesse intervalo.")
+        return data
+    mae["blocos"] = [b for b in mae["blocos"] if not (start <= b["bloco_id"] <= end)]
+    for idx, b in enumerate(mae["blocos"], 1):
+        b["bloco_id"] = idx
+    mae["ultimo_child"] = get_last_index(mae)
+    print(f"✅ Blocos {removed[0]} a {removed[-1]} removidos.")
+    return data
+
+# ————— Menus —————
+
 def menu_subconsciente(data):
     while True:
         print("""
-7. Gerenciar subconsciente (blocos)
-   1) Listar blocos
-   2) Editar bloco
-   3) Remover bloco
-   0) Voltar
+=== GERENCIAMENTO DE BLOCOS ===
+1) Listar blocos
+2) Editar bloco
+3) Remover bloco
+4) Remover sequência de blocos
+0) Voltar
 """)
         op = input("Opção: ").strip()
         if op == "1":
@@ -402,12 +453,12 @@ def menu_subconsciente(data):
             edit_bloco(data)
         elif op == "3":
             remove_bloco(data)
+        elif op == "4":
+            remove_blocks_sequence(data)
         elif op == "0":
             break
         else:
             print("Inválido.")
-
-# ————— Menu Principal —————
 
 def menu():
     subcon = load_subconsciente()
@@ -416,11 +467,13 @@ def menu():
 === SUBCONSCIOUS MANAGER ===
 1) Listar mães
 2) Adicionar mãe
-3) Processar texto
-4) Listar inconsciente
-5) Editar inconsciente
-6) Remover inconsciente
-7) Gerenciar subconsciente (blocos)
+3) Remover mãe
+4) Processar texto
+5) Listar inconsciente
+6) Inserir texto no inconsciente
+7) Editar inconsciente
+8) Remover inconsciente
+9) Gerenciar subconsciente (blocos)
 0) Sair
 """)
         cmd = input("Opção: ").strip()
@@ -429,14 +482,18 @@ def menu():
         elif cmd == "2":
             add_mae(subcon)
         elif cmd == "3":
-            subcon = process_flow(subcon)
+            subcon = remove_mae(subcon)
         elif cmd == "4":
-            list_inconsciente()
+            subcon = process_flow(subcon)
         elif cmd == "5":
-            edit_inconsciente()
+            list_inconsciente()
         elif cmd == "6":
-            remove_inconsciente()
+            add_inconsciente()
         elif cmd == "7":
+            edit_inconsciente()
+        elif cmd == "8":
+            remove_inconsciente()
+        elif cmd == "9":
             menu_subconsciente(subcon)
         elif cmd == "0":
             break
