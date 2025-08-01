@@ -10,7 +10,6 @@ import readline
 SUB_FILE = "subconsciente.json"
 INC_FILE = "inconsciente.json"
 
-
 # ————— Utilitário de Inline-Edit —————
 
 def input_prefill(prompt, text):
@@ -23,7 +22,6 @@ def input_prefill(prompt, text):
         return input(prompt)
     finally:
         readline.set_pre_input_hook(None)
-
 
 # ————— Carregamento / Salvamento —————
 
@@ -54,7 +52,6 @@ def load_inconsciente():
 def save_inconsciente(textos):
     with open(INC_FILE, 'w', encoding='utf-8') as f:
         json.dump(textos, f, ensure_ascii=False, indent=2)
-
 
 # ————— CRUD Inconsciente —————
 
@@ -101,7 +98,6 @@ def remove_inconsciente():
     texto = textos.pop(i)
     save_inconsciente(textos)
     print(f"🧠 Texto removido: {texto}")
-
 
 # ————— Gestão de Mães & Blocos —————
 
@@ -215,21 +211,21 @@ def add_saida_to_block(data, mae_id, bloco, last_idx, sugestoes):
         print(f"\n--- Saída Sugestão {i+1}/{len(saidas)} ---")
         print(seg)
         op = input("(i)nput / (e)ditar / (r)ejetar / (q)quit > ").lower().strip()
-        if op=="q":
+        if op == "q":
             break
-        if op=="e":
+        if op == "e":
             old = saidas[i]
             nova = input_prefill(" Novo texto: ", old).strip()
             if nova:
                 saidas[i] = nova
-                print("Texto de saída atualizado.")
+                print(f"✅ Texto de saída atualizado: {nova}")
             else:
-                print("Mantido o original.")
+                print(f"↩ Mantido o original: {old}")
             continue
-        if op=="r":
+        if op == "r":
             i += 1
             continue
-        if op=="i":
+        if op == "i":
             re_sai  = input("Reação (saída): ").strip()
             ctx_sai = input("Contexto (saída): ").strip()
             aln_sai = calcular_alnulu(seg)
@@ -254,6 +250,8 @@ def add_saida_to_block(data, mae_id, bloco, last_idx, sugestoes):
         print("Inválido.")
     return last_idx
 
+# ————— Processamento de Texto —————
+
 def process_flow(data):
     mae_id = select_mae(data)
 
@@ -261,7 +259,7 @@ def process_flow(data):
     list_inconsciente()
     esc = input("\nSelecione ID do texto (enter=último): ").strip()
 
-    if esc=="" or esc=="0":
+    if esc == "" or esc == "0":
         if inconsc:
             texto = inconsc[-1]
             print(f"\nUsando texto mais recente:\n{texto}")
@@ -285,32 +283,41 @@ def process_flow(data):
     for i, s in enumerate(sugestoes, 1):
         print(f" {i}. {s}")
 
-    for i, s in enumerate(sugestoes, 1):
-        print(f"\nTrecho: {s}")
+    for i, trecho in enumerate(sugestoes, 1):
+        print(f"\nTrecho: {trecho}")
         op = input("(i)nput / (e)dit / (r)ej / (q)quit > ").lower().strip()
+
         if op == "q":
             break
         if op == "r":
             continue
+
+        # EDIÇÃO: após editar, trata como input
         if op == "e":
             old = sugestoes[i-1]
             nova = input_prefill(" Novo texto: ", old).strip()
-            if nova:
-                sugestoes[i-1] = nova
-                print("Texto atualizado.")
-            else:
-                print("Mantido o original.")
-            continue
-        if op == "i":
-            bloco, last_e = create_entrada_block(data, mae_id, s)
+            texto_sel = nova if nova else old
+            sugestoes[i-1] = texto_sel
+            print(f"✅ Texto atualizado: {texto_sel}")
+
+            bloco, last_e = create_entrada_block(data, mae_id, texto_sel)
             last_full = add_saida_to_block(data, mae_id, bloco, last_e, sugestoes)
             data["maes"][mae_id]["blocos"].append(bloco)
             data["maes"][mae_id]["ultimo_child"] = last_full
             print(f"✅ Bloco #{bloco['bloco_id']} salvo.")
             continue
+
+        # INPUT direto
+        if op == "i":
+            bloco, last_e = create_entrada_block(data, mae_id, trecho)
+            last_full = add_saida_to_block(data, mae_id, bloco, last_e, sugestoes)
+            data["maes"][mae_id]["blocos"].append(bloco)
+            data["maes"][mae_id]["ultimo_child"] = last_full
+            print(f"✅ Bloco #{bloco['bloco_id']} salvo.")
+            continue
+
         print("Inválido.")
     return data
-
 
 # ————— CRUD de Blocos —————
 
@@ -328,7 +335,7 @@ def list_blocos(data):
     print(f"\nBlocos de '{mae['nome']}':")
     for b in blocos:
         ent = b["entrada"]["texto"]
-        sai = b["saida"].get("texto","")
+        sai = b["saida"].get("texto", "")
         print(f" #{b['bloco_id']} → ENTRADA: {ent} | SAÍDA: {sai}")
 
 def edit_bloco(data):
@@ -344,12 +351,12 @@ def edit_bloco(data):
         print("Bloco não existe.")
         return
     part = input("Editar (e)ntrada ou (s)aída? ").lower().strip()
-    if part not in ("e","s"):
+    if part not in ("e", "s"):
         print("Inválido.")
         return
     key = "entrada" if part == "e" else "saida"
     campo = input("Campo (t)exto/(r)eação/(c)onteúdo? ").lower().strip()
-    m = {"t":"texto","r":"reacao","c":"contexto"}.get(campo)
+    m = {"t":"texto", "r":"reacao", "c":"contexto"}.get(campo)
     if not m:
         print("Inválido.")
         return
@@ -399,7 +406,6 @@ def menu_subconsciente(data):
             break
         else:
             print("Inválido.")
-
 
 # ————— Menu Principal —————
 
