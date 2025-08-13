@@ -140,7 +140,7 @@ def train(memoria: dict, dominio: str) -> None:
     print(f"✅ Treino concluído. Checkpoint salvo em '{CKPT}'\n")
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Inferência (playlist por Enter, fim “sem ideias”)
+# Inferência (playlist interativa com escadinha de blocos)
 # ────────────────────────────────────────────────────────────────────────────────
 def _montar_X_do_bloco(b: dict) -> list[float]:
     Ein  = [float(v) for v in b["entrada"]["tokens"].get("E", [])]
@@ -151,6 +151,36 @@ def _montar_X_do_bloco(b: dict) -> list[float]:
 def _montar_Y_da_saida(saida: dict) -> list[float]:
     S, RS, CS = _saida_tokens_legacy_or_insepa(saida)
     return [float(v) for v in (S + RS + CS)]
+
+def _escolher_saida_por_modelo(model, max_x, max_y, bloco) -> dict:
+    X = _montar_X_do_bloco(bloco)
+    X_pad = X + [0.0] * (max_x - len(X))
+    with torch.no_grad():
+        y_hat = model(torch.tensor([X_pad], dtype=torch.float32))[0].numpy()
+
+    saidas = bloco.get("saidas") or ([bloco["saida"]] if "saida" in bloco else [])
+    if not saidas:
+        return None
+
+    melhor, best_idx = float("inf"), None
+    for i, s in enumerate(saidas):
+        Y = _montar_Y_da_saida(s)
+        Y_pad = Y + [0.0] * (max_y - len(Y))
+        dist = sum((float(yh) - float(yr)) ** 2 for yh, yr in zip(y_hat, Y_pad))
+        if dist < melhor:
+            melhor, best_idx = dist, i
+    return saidas[best_idx]
+
+def _variacoes_da_saida(saida: dict) -> list[str]:
+    if "textos" in saida and saida["textos"]:
+        variacoes = saida["textos"][:]
+    elif "texto" in saida:
+        variacoes = [saida["texto"]]
+    else:
+        variacoes = ["[Sem texto registrado nesta saída]"]
+    if saida.get("reacao"):
+        variacoes = [f"{v} {saida['reacao']}" for v in variacoes]
+    return variacoes
 
 def infer(memoria: dict, dominio: str) -> None:
     if not os.path.exists(CKPT):
@@ -167,64 +197,59 @@ def infer(memoria: dict, dominio: str) -> None:
     model.load_state_dict(state)
     model.eval()
 
+    # Entrada inicial
     raw = input("👤 Entrada + Reação: ")
     txt, rea = parse_text_reaction(raw, blocos)
 
-    # 1) Localiza bloco (texto + reação)
-    bloco_match = None
-    for b in blocos:
-        ent = b.get("entrada", {})
-        if txt == ent.get("texto") and rea == ent.get("reacao", ""):
-            bloco_match = b
-            break
-    if bloco_match is None:
+    # Localiza bloco inicial
+    bloco_atual = next((b for b in blocos
+                        if b.get("entrada", {}).get("texto") == txt
+                        and b.get("entrada", {}).get("reacao", "") == rea), None)
+    if bloco_atual is None:
         print("❌ Entrada+reação não cadastrada neste domínio.")
         return
 
-    # 2) Infere Y e escolhe saída mais próxima dentro do bloco
-    X = _montar_X_do_bloco(bloco_match)
-    X_pad = X + [0.0] * (max_x - len(X))
-    with torch.no_grad():
-        y_hat = model(torch.tensor([X_pad], dtype=torch.float32))[0].numpy()
+    # Loop principal: playlist com escadinha entre blocos
+    while True:
+        saida_escolhida = _escolher_saida_por_modelo(model, max_x, max_y, bloco_atual)
+        if not saida_escolhida:
+            print("⚠️ Bloco atual não possui saídas.")
+            return
 
-    if "saidas" in bloco_match and bloco_match["saidas"]:
-        saidas = bloco_match["saidas"]
-    elif "saida" in bloco_match and bloco_match["saida"]:
-        saidas = [bloco_match["saida"]]
-    else:
-        print("⚠️ Bloco não possui saídas cadastradas.")
-        return
+        variacoes = _variacoes_da_saida(saida_escolhida)
+        idx = 0
 
-    melhor, best_idx = float("inf"), None
-    for i, s in enumerate(saidas):
-        Y = _montar_Y_da_saida(s)
-        Y_pad = Y + [0.0] * (max_y - len(Y))
-        dist = sum((float(yh) - float(yr)) ** 2 for yh, yr in zip(y_hat, Y_pad))
-        if dist < melhor:
-            melhor, best_idx = dist, i
-    saida_escolhida = saidas[best_idx]
+        while True:
+            # 1) Emite a próxima variação desta saída
+            if idx < len(variacoes):
+                print(f"\n🤖 {variacoes[idx]}")
+                idx += 1
+            else:
+                # Acabaram as variações desta saída
+                print("\nHm pelo visto fiquei sem ideias hoje minha criadora")
+                break
 
-    # 3) Prepara variações de texto dessa saída
-    if "textos" in saida_escolhida and saida_escolhida["textos"]:
-        variacoes = saida_escolhida["textos"][:]
-    elif "texto" in saida_escolhida:
-        variacoes = [saida_escolhida["texto"]]
-    else:
-        variacoes = ["[Sem texto registrado nesta saída]"]
+            # 2) Espera Enter (próxima) ou nova entrada (possível mudança de bloco)
+            entrada_usuario = input("(Enter p/ próxima | nova entrada p/ mudar) ")
+            if entrada_usuario.strip():
+                novo_txt, novo_rea = parse_text_reaction(entrada_usuario, blocos)
+                # Tenta localizar um novo bloco por texto+reação exatos
+                bloco_novo = next((b for b in blocos
+                                   if b.get("entrada", {}).get("texto") == novo_txt
+                                   and b.get("entrada", {}).get("reacao", "") == novo_rea), None)
+                if bloco_novo:
+                    # Troca de bloco (escadinha) e reinicia o laço externo
+                    bloco_atual = bloco_novo
+                    break
+                else:
+                    print("❌ Não encontrei um bloco com essa entrada. Continuando no atual…")
+            # Se só Enter, continua no mesmo bloco/saída/variações
 
-    # Emoção incorporada no fim (sem exibir rótulos)
-    if saida_escolhida.get("reacao"):
-        variacoes = [f"{v} {saida_escolhida['reacao']}" for v in variacoes]
-
-    # 4) Playlist: uma resposta por Enter
-    idx = 0
-    while idx < len(variacoes):
-        print(f"\n🤖 {variacoes[idx]}")
-        idx += 1
-        if idx < len(variacoes):
-            _ = input("(Enter para próxima variação) ")
-
-    print("\nHm pelo visto fiquei sem ideias")
+        # Saiu do while interno por troca de bloco? Continua no while externo.
+        # Saiu por fim de variações sem nova entrada? Encerramos geral.
+        if idx >= len(variacoes) and not entrada_usuario.strip():
+            # Terminamos por falta de variações e não veio nova entrada
+            break
 
 # ────────────────────────────────────────────────────────────────────────────────
 # CLI
