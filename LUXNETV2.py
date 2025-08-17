@@ -5,9 +5,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
+from typing import Callable, List
 
 ARQUIVO_MEMORIA = "adam_memoria.json"
-CKPT            = "insepa_xy.pt"
+CKPT             = "insepa_xy.pt"
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Utilitários
@@ -37,25 +38,16 @@ def parse_text_reaction(raw: str, blocos: list[dict]) -> tuple[str, str]:
 
 def _saida_tokens_legacy_or_insepa(saida: dict) -> tuple[list[str], list[str], list[str]]:
     """
-    Compat: legado (E/RE/CE) e atual (S/RS/CS). Retorna sempre (S, RS, CS).
+    Compatibilidade legado (E/RE/CE) e atual (S/RS/CS).
+    Retorna sempre (S, RS, CS).
     """
     t = saida.get("tokens", {})
     if "S" in t or "RS" in t or "CS" in t:
-        S  = t.get("S", [])
-        RS = t.get("RS", [])
-        CS = t.get("CS", [])
+        return t.get("S", []), t.get("RS", []), t.get("CS", [])
     else:
-        S  = t.get("E", [])
-        RS = t.get("RE", [])
-        CS = t.get("CE", [])
-    return S, RS, CS
+        return t.get("E", []), t.get("RE", []), t.get("CE", [])
 
 def xy_from_block_many(b: dict) -> list[tuple[list[float], list[float]]]:
-    """
-    Gera múltiplos pares (X, Y) por bloco (uma amostra por saída).
-    X = E_in + RE_in + CE_in
-    Y = S_out + RS_out + CS_out
-    """
     Ein  = [float(v) for v in b["entrada"]["tokens"].get("E", [])]
     REin = [float(v) for v in b["entrada"]["tokens"].get("RE", [])]
     CEin = [float(v) for v in b["entrada"]["tokens"].get("CE", [])]
@@ -65,26 +57,51 @@ def xy_from_block_many(b: dict) -> list[tuple[list[float], list[float]]]:
     if "saidas" in b and b["saidas"]:
         for saida in b["saidas"]:
             S, RS, CS = _saida_tokens_legacy_or_insepa(saida)
-            Y = [float(v) for v in (S + RS + CS)]
-            pares.append((X, Y))
+            pares.append((X, [float(v) for v in (S + RS + CS)]))
     elif "saida" in b and b["saida"]:
         S, RS, CS = _saida_tokens_legacy_or_insepa(b["saida"])
-        Y = [float(v) for v in (S + RS + CS)]
-        pares.append((X, Y))
+        pares.append((X, [float(v) for v in (S + RS + CS)]))
     return pares
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Normalização de texto (pipeline enxuto)
+# ────────────────────────────────────────────────────────────────────────────────
+Normalizers = List[Callable[[str], str]]
+
+def normalize_collapse_spaces(txt: str) -> str:
+    """1) Colapsa múltiplos espaços em um só e remove espaços nas bordas."""
+    return re.sub(r'\s+', ' ', txt).strip()
+
+def normalize_separators(txt: str) -> str:
+    """
+    2) Normaliza vírgula e ponto:
+       - remove espaços antes de ',' e '.'
+       - garante um espaço após ',' e '.'
+    """
+    txt = re.sub(r'\s*([.,])\s*', r'\1 ', txt)
+    return txt.strip()
+
+NORMALIZE_PIPELINE: Normalizers = [
+    normalize_collapse_spaces,
+    normalize_separators,
+]
+
+def normalize(txt: str) -> str:
+    for fn in NORMALIZE_PIPELINE:
+        txt = fn(txt)
+    return txt
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Dataset e modelo
 # ────────────────────────────────────────────────────────────────────────────────
 class InsepaXY(Dataset):
-    """Pares (X, Y) com padding automático, cobrindo todas as saídas dos blocos."""
     def __init__(self, memoria: dict, dominio: str):
         blocos = memoria["maes"][dominio]["blocos"]
         self.pares = []
         for b in blocos:
             self.pares.extend(xy_from_block_many(b))
         if not self.pares:
-            raise ValueError("Nenhum par (X,Y) encontrado. Verifique se há saídas nos blocos.")
+            raise ValueError("Nenhum par (X,Y) encontrado.")
         self.max_x = max(len(x) for x, _ in self.pares)
         self.max_y = max(len(y) for _, y in self.pares)
 
@@ -98,7 +115,6 @@ class InsepaXY(Dataset):
         return torch.tensor(x_pad, dtype=torch.float32), torch.tensor(y_pad, dtype=torch.float32)
 
 class InsepaReg(nn.Module):
-    """MLP simples X→Y."""
     def __init__(self, xin: int, yout: int, hidden: int = 32):
         super().__init__()
         self.net = nn.Sequential(
@@ -114,27 +130,24 @@ class InsepaReg(nn.Module):
 # ────────────────────────────────────────────────────────────────────────────────
 def train(memoria: dict, dominio: str) -> None:
     torch.manual_seed(42)
-    ds     = InsepaXY(memoria, dominio)
-    loader = DataLoader(ds, batch_size=2, shuffle=True)
-    model  = InsepaReg(ds.max_x, ds.max_y)
+    ds        = InsepaXY(memoria, dominio)
+    loader    = DataLoader(ds, batch_size=2, shuffle=True)
+    model     = InsepaReg(ds.max_x, ds.max_y)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     loss_fn   = nn.MSELoss()
 
     print(f"🚀 Treinando domínio {dominio} ({len(ds)} pares X→Y)...")
-    epochs = 100
-    for ep in range(1, epochs + 1):
+    for ep in range(1, 101):
         total_loss = 0.0
         model.train()
         for X, Y in loader:
             optimizer.zero_grad()
-            pred = model(X)
-            loss = loss_fn(pred, Y)
+            loss = loss_fn(model(X), Y)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-        if ep == 1 or ep % 10 == 0 or ep == epochs:
-            avg = total_loss / max(1, len(loader))
-            print(f" Ep {ep:03d}/{epochs}  loss={avg:.4f}")
+        if ep == 1 or ep % 10 == 0 or ep == 100:
+            print(f" Ep {ep:03d}/100  loss={total_loss/len(loader):.4f}")
 
     torch.save((model.state_dict(), ds.max_x, ds.max_y), CKPT)
     print(f"✅ Treino concluído. Checkpoint salvo em '{CKPT}'\n")
@@ -153,7 +166,7 @@ def _montar_Y_da_saida(saida: dict) -> list[float]:
     return [float(v) for v in (S + RS + CS)]
 
 def _escolher_saida_por_modelo(model, max_x, max_y, bloco) -> dict:
-    X = _montar_X_do_bloco(bloco)
+    X     = _montar_X_do_bloco(bloco)
     X_pad = X + [0.0] * (max_x - len(X))
     with torch.no_grad():
         y_hat = model(torch.tensor([X_pad], dtype=torch.float32))[0].numpy()
@@ -164,11 +177,11 @@ def _escolher_saida_por_modelo(model, max_x, max_y, bloco) -> dict:
 
     melhor, best_idx = float("inf"), None
     for i, s in enumerate(saidas):
-        Y = _montar_Y_da_saida(s)
-        Y_pad = Y + [0.0] * (max_y - len(Y))
-        dist = sum((float(yh) - float(yr)) ** 2 for yh, yr in zip(y_hat, Y_pad))
+        Y_pad = _montar_Y_da_saida(s) + [0.0] * (max_y - len(_montar_Y_da_saida(s)))
+        dist  = sum((yh - yr) ** 2 for yh, yr in zip(y_hat, Y_pad))
         if dist < melhor:
             melhor, best_idx = dist, i
+
     return saidas[best_idx]
 
 def _variacoes_da_saida(saida: dict) -> list[str]:
@@ -188,71 +201,64 @@ def infer(memoria: dict, dominio: str) -> None:
         train(memoria, dominio)
 
     state, max_x, max_y = torch.load(CKPT)
-    blocos = memoria["maes"][dominio]["blocos"]
+    blocos = memoria["maes"].get(dominio, {}).get("blocos")
     if not blocos:
-        print("⚠️ Nenhum bloco encontrado para inferência.")
+        print("❌ Universo não encontrado ou sem blocos.")
         return
 
     model = InsepaReg(max_x, max_y)
     model.load_state_dict(state)
     model.eval()
 
-    # Entrada inicial
+    # 1) escolhe entrada+reação
     raw = input("👤 Entrada + Reação: ")
     txt, rea = parse_text_reaction(raw, blocos)
+    key = normalize(txt)
 
-    # Localiza bloco inicial
-    bloco_atual = next((b for b in blocos
-                        if b.get("entrada", {}).get("texto") == txt
-                        and b.get("entrada", {}).get("reacao", "") == rea), None)
-    if bloco_atual is None:
-        print("❌ Entrada+reação não cadastrada neste domínio.")
+    # 2) localiza bloco inicial com texto NORMALIZADO
+    bloco_atual = next(
+        (b for b in blocos
+         if normalize(b["entrada"]["texto"]) == key
+         and b["entrada"].get("reacao", "") == rea),
+        None
+    )
+    if not bloco_atual:
+        print("❌ Entrada+reação não cadastrada neste universo.")
         return
 
-    # Loop principal: playlist com escadinha entre blocos
+    # 3) playlist com escadinha
     while True:
-        saida_escolhida = _escolher_saida_por_modelo(model, max_x, max_y, bloco_atual)
-        if not saida_escolhida:
-            print("⚠️ Bloco atual não possui saídas.")
+        saida_sel = _escolher_saida_por_modelo(model, max_x, max_y, bloco_atual)
+        if not saida_sel:
+            print("⚠️ Bloco atual sem saídas.")
             return
 
-        variacoes = _variacoes_da_saida(saida_escolhida)
+        variacoes = _variacoes_da_saida(saida_sel)
         idx = 0
-
-        while True:
-            # 1) Emite a próxima variação desta saída
-            if idx < len(variacoes):
-                print(f"\n🤖 {variacoes[idx]}")
-                idx += 1
-            else:
-                # Acabaram as variações desta saída
-                print("\nHm pelo visto fiquei sem ideias hoje minha criadora")
-                break
-
-            # 2) Espera Enter (próxima) ou nova entrada (possível mudança de bloco)
-            entrada_usuario = input("(Enter p/ próxima | nova entrada p/ mudar) ")
-            if entrada_usuario.strip():
-                novo_txt, novo_rea = parse_text_reaction(entrada_usuario, blocos)
-                # Tenta localizar um novo bloco por texto+reação exatos
-                bloco_novo = next((b for b in blocos
-                                   if b.get("entrada", {}).get("texto") == novo_txt
-                                   and b.get("entrada", {}).get("reacao", "") == novo_rea), None)
+        while idx < len(variacoes):
+            print(f"\n🤖 {variacoes[idx]}")
+            idx += 1
+            entrada = input("(Enter p/ próxima | texto p/ outro bloco) ")
+            if entrada.strip():
+                novo_txt, novo_rea = parse_text_reaction(entrada, blocos)
+                key2 = normalize(novo_txt)
+                bloco_novo = next(
+                    (b for b in blocos
+                     if normalize(b["entrada"]["texto"]) == key2
+                     and b["entrada"].get("reacao", "") == novo_rea),
+                    None
+                )
                 if bloco_novo:
-                    # Troca de bloco (escadinha) e reinicia o laço externo
                     bloco_atual = bloco_novo
                     break
                 else:
-                    print("❌ Não encontrei um bloco com essa entrada. Continuando no atual…")
-            # Se só Enter, continua no mesmo bloco/saída/variações
-
-        # Saiu do while interno por troca de bloco? Continua no while externo.
-        # Saiu por fim de variações sem nova entrada? Encerramos geral.
-        if idx >= len(variacoes) and not entrada_usuario.strip():
-            # Terminamos por falta de variações e não veio nova entrada
-            break
+                    print("❌ Não achei esse bloco. Continuo no atual.")
+        else:
+            print("\n😔 Sem mais variações. Fim da playlist.")
+            return
 
 # ────────────────────────────────────────────────────────────────────────────────
-# CLI
+# CLI multi-universo com menu principal
 # ────────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     if not os.path.exists(ARQUIVO_MEMORIA):
@@ -260,11 +266,39 @@ if __name__ == "__main__":
             json.dump({"maes": {}}, f, ensure_ascii=False, indent=2)
 
     memoria = json.load(open(ARQUIVO_MEMORIA, "r", encoding="utf-8"))
-    dominio = input("Domínio (índice-mãe): ").strip()
 
-    print("\n1) Treinar rede neural   2) Inferir com rede neural")
-    op = input("Opção: ").strip()
-    if op == "1":
-        train(memoria, dominio)
-    else:
-        infer(memoria, dominio)
+    while True:
+        print("\n=== Menu Principal ===")
+        print("1) Treinar rede neural")
+        print("2) Inferir com rede neural")
+        print("3) Sair do programa")
+        opc = input("Escolha uma opção (1/2/3): ").strip()
+
+        if opc == "1":
+            while True:
+                dom = input("→ Índice-mãe p/ treinar (ou 'sair' p/ voltar): ").strip()
+                if dom.lower() == "sair":
+                    break
+                if dom not in memoria["maes"]:
+                    print(f"⚠️ Universo '{dom}' não existe.")
+                    continue
+                train(memoria, dom)
+
+        elif opc == "2":
+            while True:
+                dom = input("→ Índice-mãe p/ inferir (ou 'sair' p/ voltar): ").strip()
+                if dom.lower() == "sair":
+                    break
+                if dom not in memoria["maes"]:
+                    print(f"⚠️ Universo '{dom}' não existe.")
+                    continue
+                infer(memoria, dom)
+                break
+
+        elif opc in ("3", "sair", "exit", "quit"):
+            print("👋 Até mais!")
+            break
+
+        else:
+            print("❌ Opção inválida. Tente 1, 2 ou 3.")
+
