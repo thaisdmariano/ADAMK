@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+ADAMK – Chatbot Insepa
+Script completo com normalização de pontuação ajustada apenas para
+os Separadores Genéricos (vírgula, ponto, ponto-e-vírgula e dois-pontos).
+"""
+
 import os
 import json
 import re
@@ -74,11 +82,12 @@ def normalize_collapse_spaces(txt: str) -> str:
 
 def normalize_separators(txt: str) -> str:
     """
-    2) Normaliza vírgula e ponto:
-       - remove espaços antes de ',' e '.'
-       - garante um espaço após ',' e '.'
+    2) Normaliza os Separadores Genéricos:
+       vírgula, ponto final, ponto-e-vírgula e dois-pontos
+       - remove espaços antes de [, . ; :]
+       - garante exatamente um espaço depois
     """
-    txt = re.sub(r'\s*([.,])\s*', r'\1 ', txt)
+    txt = re.sub(r'\s*([,.;:])\s*', r'\1 ', txt)
     return txt.strip()
 
 NORMALIZE_PIPELINE: Normalizers = [
@@ -146,7 +155,7 @@ def train(memoria: dict, dominio: str) -> None:
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-        if ep == 1 or ep % 10 == 0 or ep == 100:
+        if ep in (1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100):
             print(f" Ep {ep:03d}/100  loss={total_loss/len(loader):.4f}")
 
     torch.save((model.state_dict(), ds.max_x, ds.max_y), CKPT)
@@ -210,12 +219,10 @@ def infer(memoria: dict, dominio: str) -> None:
     model.load_state_dict(state)
     model.eval()
 
-    # 1) escolhe entrada+reação
     raw = input("👤 Entrada + Reação: ")
     txt, rea = parse_text_reaction(raw, blocos)
     key = normalize(txt)
 
-    # 2) localiza bloco inicial com texto NORMALIZADO
     bloco_atual = next(
         (b for b in blocos
          if normalize(b["entrada"]["texto"]) == key
@@ -226,7 +233,6 @@ def infer(memoria: dict, dominio: str) -> None:
         print("❌ Entrada+reação não cadastrada neste universo.")
         return
 
-    # 3) playlist com escadinha
     while True:
         saida_sel = _escolher_saida_por_modelo(model, max_x, max_y, bloco_atual)
         if not saida_sel:
@@ -301,4 +307,5 @@ if __name__ == "__main__":
 
         else:
             print("❌ Opção inválida. Tente 1, 2 ou 3.")
+
 
