@@ -77,16 +77,9 @@ def xy_from_block_many(b: dict) -> list[tuple[list[float], list[float]]]:
 Normalizers = List[Callable[[str], str]]
 
 def normalize_collapse_spaces(txt: str) -> str:
-    """1) Colapsa múltiplos espaços em um só e remove espaços nas bordas."""
     return re.sub(r'\s+', ' ', txt).strip()
 
 def normalize_separators(txt: str) -> str:
-    """
-    2) Normaliza os Separadores Genéricos:
-       vírgula, ponto final, ponto-e-vírgula e dois-pontos
-       - remove espaços antes de [, . ; :]
-       - garante exatamente um espaço depois
-    """
     txt = re.sub(r'\s*([,.;:])\s*', r'\1 ', txt)
     return txt.strip()
 
@@ -219,49 +212,60 @@ def infer(memoria: dict, dominio: str) -> None:
     model.load_state_dict(state)
     model.eval()
 
-    raw = input("👤 Entrada + Reação: ")
-    txt, rea = parse_text_reaction(raw, blocos)
-    key = normalize(txt)
-
-    bloco_atual = next(
-        (b for b in blocos
-         if normalize(b["entrada"]["texto"]) == key
-         and b["entrada"].get("reacao", "") == rea),
-        None
-    )
-    if not bloco_atual:
-        print("❌ Entrada+reação não cadastrada neste universo.")
-        return
-
+    # ----> Aqui inserimos a opção de parágrafos
     while True:
-        saida_sel = _escolher_saida_por_modelo(model, max_x, max_y, bloco_atual)
-        if not saida_sel:
-            print("⚠️ Bloco atual sem saídas.")
+        raw = input("\n👤 Entrada + Reação (ou 'p' para parágrafos CBCS): ").strip()
+        if raw.lower() == "p":
+            # gera e exibe todos os parágrafos
+            parags = build_paragraphs_with_emojis(memoria, dominio, randomize=True)
+            for seq, texto in parags.items():
+                print(f"\nSequência {list(seq)}:\n{texto}\n")
             return
 
-        variacoes = _variacoes_da_saida(saida_sel)
-        idx = 0
-        while idx < len(variacoes):
-            print(f"\n🤖 {variacoes[idx]}")
-            idx += 1
-            entrada = input("(Enter p/ próxima | texto p/ outro bloco) ")
-            if entrada.strip():
-                novo_txt, novo_rea = parse_text_reaction(entrada, blocos)
-                key2 = normalize(novo_txt)
-                bloco_novo = next(
-                    (b for b in blocos
-                     if normalize(b["entrada"]["texto"]) == key2
-                     and b["entrada"].get("reacao", "") == novo_rea),
-                    None
-                )
-                if bloco_novo:
-                    bloco_atual = bloco_novo
-                    break
-                else:
-                    print("❌ Não achei esse bloco. Continuo no atual.")
-        else:
-            print("\n😔 Sem mais variações. Fim da playlist.")
-            return
+        # fluxo normal de inferência
+        txt, rea = parse_text_reaction(raw, blocos)
+        key = normalize(txt)
+
+        bloco_atual = next(
+            (b for b in blocos
+             if normalize(b["entrada"]["texto"]) == key
+             and b["entrada"].get("reacao", "") == rea),
+            None
+        )
+        if not bloco_atual:
+            print("❌ Entrada+reação não cadastrada neste universo.")
+            continue
+
+        # percorre variações do bloco atual
+        while True:
+            saida_sel = _escolher_saida_por_modelo(model, max_x, max_y, bloco_atual)
+            if not saida_sel:
+                print("⚠️ Bloco atual sem saídas.")
+                return
+
+            variacoes = _variacoes_da_saida(saida_sel)
+            idx = 0
+            while idx < len(variacoes):
+                print(f"\n🤖 {variacoes[idx]}")
+                idx += 1
+                entrada = input("(Enter p/ próxima | texto p/ outro bloco) ").strip()
+                if entrada:
+                    novo_txt, novo_rea = parse_text_reaction(entrada, blocos)
+                    key2 = normalize(novo_txt)
+                    bloco_novo = next(
+                        (b for b in blocos
+                         if normalize(b["entrada"]["texto"]) == key2
+                         and b["entrada"].get("reacao", "") == novo_rea),
+                        None
+                    )
+                    if bloco_novo:
+                        bloco_atual = bloco_novo
+                        break
+                    else:
+                        print("❌ Não achei esse bloco. Continuo no atual.")
+            else:
+                print("\n😔 Sem mais variações. Fim da playlist.")
+                return
 
 # ────────────────────────────────────────────────────────────────────────────────
 # O MURO para criar blocos ficaria perfeito aqui
@@ -305,17 +309,6 @@ def build_paragraphs_with_emojis(memoria: dict, dominio: str, randomize: bool = 
         resultados[tuple(seq)] = parag
     return resultados
 
-def criar_paragrafos_cli(memoria: dict):
-    dom = input("→ Índice-mãe p/ gerar parágrafos (ou 'sair'): ").strip()
-    if dom.lower() == "sair":
-        return
-    if dom not in memoria["maes"]:
-        print(f"⚠️ Universo '{dom}' não existe.")
-        return
-    parags = build_paragraphs_with_emojis(memoria, dom, randomize=True)
-    for seq, texto in parags.items():
-        print(f"\nSequência {list(seq)}:\n{texto}\n")
-
 # ────────────────────────────────────────────────────────────────────────────────
 # CLI multi-universo com menu principal
 # ────────────────────────────────────────────────────────────────────────────────
@@ -330,9 +323,8 @@ if __name__ == "__main__":
         print("\n=== Menu Principal ===")
         print("1) Treinar rede neural")
         print("2) Inferir com rede neural")
-        print("3) Gerar parágrafos CBCS")
-        print("4) Sair do programa")
-        opc = input("Escolha uma opção (1/2/3/4): ").strip()
+        print("3) Sair do programa")
+        opc = input("Escolha uma opção (1/2/3): ").strip()
 
         if opc == "1":
             while True:
@@ -355,12 +347,9 @@ if __name__ == "__main__":
                 infer(memoria, dom)
                 break
 
-        elif opc == "3":
-            criar_paragrafos_cli(memoria)
-
-        elif opc in ("4", "sair", "exit", "quit"):
+        elif opc in ("3", "sair", "exit", "quit"):
             print("👋 Até mais!")
             break
 
         else:
-            print("❌ Opção inválida. Tente 1, 2, 3 ou 4.")
+            print("❌ Opção inválida. Tente 1, 2 ou 3.")
