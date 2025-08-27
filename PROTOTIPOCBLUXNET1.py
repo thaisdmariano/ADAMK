@@ -12,6 +12,8 @@ import json
 import re
 import random
 import itertools
+import unicodedata
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -94,7 +96,9 @@ NORMALIZE_PIPELINE: Normalizers = [
 def normalize(txt: str) -> str:
     for fn in NORMALIZE_PIPELINE:
         txt = fn(txt)
-    return txt
+    # remove accents for matching exata
+    txt = unicodedata.normalize("NFKD", txt)
+    return "".join(c for c in txt if not unicodedata.combining(c)).lower().strip()
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Dataset e modelo
@@ -217,12 +221,14 @@ def infer(memoria: dict, dominio: str) -> None:
 
     # ----> Aqui inserimos a opção de parágrafos
     while True:
-        raw = input("\n👤 Entrada + Reação (ou 'p' para parágrafos CBCS): ").strip()
-        if raw.lower() == "p":
-            # gera e exibe todos os parágrafos
-            parags = build_paragraphs_with_emojis(memoria, dominio, randomize=True)
-            for seq, texto in parags.items():
-                print(f"\nSequência {list(seq)}:\n{texto}\n")
+        raw = input("\n👤 Entrada + Reação (ou 'P' + combinações): ").strip()
+
+        # PASSA A ACEITAR 'P ' COM MÚLTIPLAS ENTRADAS E EMOJIS
+        if raw.lower().startswith("p"):
+            # não exibe mais contexto, só paragrafos resultantes
+            paragrafos = build_paragraphs_with_emojis(memoria, dominio, raw, randomize=True)
+            for p in paragrafos:
+                print(f"\n🤖 {p}")
             return
 
         # fluxo normal de inferência
@@ -271,18 +277,23 @@ def infer(memoria: dict, dominio: str) -> None:
                 return
 
 # ────────────────────────────────────────────────────────────────────────────────
-# A FUNÇÃO P DO MURO — VERSÃO APRIMORADA
+# A FUNÇÃO P DO MURO — VERSÃO APRIMORADA--- > É aqui que vai aplicar as melhorias na função P
 # ────────────────────────────────────────────────────────────────────────────────
-def build_paragraphs_with_emojis(memoria: dict, dominio: str, randomize: bool = True) -> dict:
+def build_paragraphs_with_emojis(
+    memoria: dict,
+    dominio: str,
+    raw: str = None,
+    randomize: bool = True
+) -> list[str]:
     """
-    Lê memoria["maes"][dominio], detecta 'cb'/'cbcs' no topo ou em um bloco
-    e gera um parágrafo para cada combinação possível de bloco_id,
-    concatenando texto + reação em linhas separadas.
+    Se raw for 'p'+combinações exatas de entradas+reações,
+    bate nas sequências CBCS e retorna o produto cartesiano das saídas.
+    Caso contrário, gera todos os parágrafos de saída por CBCS (legado).
     """
-    universo  = memoria["maes"][dominio]
-    blocos    = universo["blocos"]
+    universo   = memoria["maes"][dominio]
+    blocos     = universo["blocos"]
 
-    # detecta cb e cbcs no topo ou dentro de um bloco
+    # extrai cb/cbcs do topo ou via bloco CB interno
     if "cb" in universo:
         cb_info   = universo["cb"]
         bids      = set(cb_info.get("bids", []))
@@ -293,36 +304,66 @@ def build_paragraphs_with_emojis(memoria: dict, dominio: str, randomize: bool = 
         bids      = set(cb_info.get("BIDS", []))
         sequences = cb_info.get("CBCS", [])
 
-    resultados = {}
+    # se for comando 'P ' com payload, tenta múltiplas entradas
+    if raw and raw.lower().startswith("p"):
+        content = normalize(raw[1:].strip())
+
+        # procura pela sequência cujo padrão de entrada+reação casem exatamente
+        for seq in sequences:
+            if not set(seq).issubset(bids):
+                continue
+
+            # constrói regex concat de (texto_normalizado + emoji)
+            patterns = []
+            for bid in seq:
+                bloco = next(b for b in blocos if b["bloco_id"] == bid and b.get("open"))
+                txt   = normalize(bloco["entrada"]["texto"])
+                rea   = bloco["entrada"].get("reacao", "").strip()
+                pat   = f"{txt} {rea}".strip()
+                patterns.append(re.escape(pat))
+
+            regex = r"^" + r"\s*".join(patterns) + r"$"
+            if re.match(regex, content):
+                # bateu → monta produto cartesiano das saídas desses blocos
+                seq_blocos = [
+                    next(b for b in blocos if b["bloco_id"] == bid and b.get("open"))
+                    for bid in seq
+                ]
+                listas = []
+                for b in seq_blocos:
+                    out    = b["saidas"][0]
+                    textos = out.get("textos", [])
+                    reac   = out.get("reacao", "").strip()
+                    listas.append([f"{t} {reac}".strip() for t in textos])
+
+                combos = ["\n".join(c) for c in itertools.product(*listas)]
+                if randomize:
+                    random.shuffle(combos)
+                return combos
+
+    # fallback legado: gera todos os parágrafos por CBCS
+    parag_list = []
     for seq in sequences:
-        # monta lista de listas de variações (texto + reação) para cada bloco na sequência
         listas_por_bloco = []
         for bid in seq:
             if bid not in bids:
                 continue
-            bloco = next(b for b in blocos if b["bloco_id"] == bid and b.get("open"))
-            saida = bloco["saidas"][0]
+            bloco  = next(b for b in blocos if b["bloco_id"] == bid and b.get("open"))
+            saida  = bloco["saidas"][0]
             textos = saida.get("textos", [])
             reacao = saida.get("reacao", "").strip()
-            # cria lista de "texto + <espaço> + reação" (ou só texto, se não houver reação)
             if reacao:
                 listas_por_bloco.append([f"{t} {reacao}" for t in textos])
             else:
                 listas_por_bloco.append(textos[:])
 
-        # gera o produto cartesiano entre as listas de variações
-        paragrafos = []
         for combo in itertools.product(*listas_por_bloco):
-            paragrafos.append("\n".join(combo))
+            parag_list.append("\n".join(combo))
 
-        # embaralha, se desejado
-        if randomize:
-            random.shuffle(paragrafos)
+    if randomize:
+        random.shuffle(parag_list)
 
-        # junta cada combinação num único texto, separado por 2 linhas em branco
-        resultados[tuple(seq)] = "\n\n".join(paragrafos)
-
-    return resultados
+    return parag_list
 
 # ────────────────────────────────────────────────────────────────────────────────
 # CLI multi-universo com menu principal
@@ -368,3 +409,4 @@ if __name__ == "__main__":
 
         else:
             print("❌ Opção inválida. Tente 1, 2 ou 3.")
+
