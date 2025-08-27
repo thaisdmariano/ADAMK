@@ -3,12 +3,15 @@
 """
 ADAMK – Chatbot Insepa
 Script completo com normalização de pontuação ajustada apenas para
-os Separadores Genéricos (vírgula, ponto, ponto-e-vírgula e dois-pontos).
+os Separadores Genéricos (vírgula, ponto, ponto-e-vírgula e dois-pontos),
+treino em PyTorch e inferência com opção de listar todos os parágrafos CBCS.
 """
 
 import os
 import json
 import re
+import random
+import itertools
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -268,15 +271,13 @@ def infer(memoria: dict, dominio: str) -> None:
                 return
 
 # ────────────────────────────────────────────────────────────────────────────────
-# O MURO para criar blocos ficaria perfeito aqui
+# A FUNÇÃO P DO MURO — VERSÃO APRIMORADA
 # ────────────────────────────────────────────────────────────────────────────────
-import random
-
 def build_paragraphs_with_emojis(memoria: dict, dominio: str, randomize: bool = True) -> dict:
     """
     Lê memoria["maes"][dominio], detecta 'cb'/'cbcs' no topo ou em um bloco
-    e gera um parágrafo por cada sequência de bloco_id,
-    concatenando textos e listando emojis ao fim.
+    e gera um parágrafo para cada combinação possível de bloco_id,
+    concatenando texto + reação em linhas separadas.
     """
     universo  = memoria["maes"][dominio]
     blocos    = universo["blocos"]
@@ -294,19 +295,33 @@ def build_paragraphs_with_emojis(memoria: dict, dominio: str, randomize: bool = 
 
     resultados = {}
     for seq in sequences:
-        parts, emojis = [], []
+        # monta lista de listas de variações (texto + reação) para cada bloco na sequência
+        listas_por_bloco = []
         for bid in seq:
             if bid not in bids:
                 continue
             bloco = next(b for b in blocos if b["bloco_id"] == bid and b.get("open"))
             saida = bloco["saidas"][0]
-            escolha = random.choice(saida["textos"]) if randomize else saida["textos"][0]
-            parts.append(escolha)
-            re = saida.get("reacao", "").strip()
-            if re:
-                emojis.append(re)
-        parag = " ".join(parts) + "\nEmojis: " + "".join(emojis)
-        resultados[tuple(seq)] = parag
+            textos = saida.get("textos", [])
+            reacao = saida.get("reacao", "").strip()
+            # cria lista de "texto + <espaço> + reação" (ou só texto, se não houver reação)
+            if reacao:
+                listas_por_bloco.append([f"{t} {reacao}" for t in textos])
+            else:
+                listas_por_bloco.append(textos[:])
+
+        # gera o produto cartesiano entre as listas de variações
+        paragrafos = []
+        for combo in itertools.product(*listas_por_bloco):
+            paragrafos.append("\n".join(combo))
+
+        # embaralha, se desejado
+        if randomize:
+            random.shuffle(paragrafos)
+
+        # junta cada combinação num único texto, separado por 2 linhas em branco
+        resultados[tuple(seq)] = "\n\n".join(paragrafos)
+
     return resultados
 
 # ────────────────────────────────────────────────────────────────────────────────
