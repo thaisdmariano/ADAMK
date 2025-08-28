@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -5,19 +6,19 @@
 ADAMK – Chatbot Insepa by Thaís D' Mariano
 Script completo com normalização de pontuação ajustada apenas para
 os Separadores Genéricos (vírgula, ponto, ponto-e-vírgula e dois-pontos).
-"""
 
-"""
 O INSEPA: É um sistema de tokenização que permite que a leitura dos dados seja efetuada pela máquina. Tal como um humano leria um livro.
 ACEITA: Pontuação, emojis e Contexto tudo embutido.
-DELIMITA: todas as palavras com marcadores únicos baseados no índice mãe, que permitem variabilidade de dados sem cair em ambiguidades. [Mãe 1, filhos 1.1, 1.2,1.3] 
+DELIMITA: todas as palavras com marcadores únicos baseados no índice mãe, que permitem variabilidade de dados sem cair em ambiguidades. [Mãe 1, filhos 1.1, 1.2,1.3]
 DIVIDE: Cada universo é treinado com base na mãe, portanto os dados jamais se generalizam (o quê é motivo de orgulho e não falha) [Mãe 1 ≠ Mãe 2]
 ORGANIZA: os dados de índices filhos por blocos inseparizados que se dividem em:
-Entrada=Texto+reação+contexto e Saída=Multiplicidade de textos+reação+contexto.
-DISPARA RESPOSTAS COM BASE NOS MARCADORES ÚNICOS: Se o Total da Entrada X é: [ "1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]
-ele sempre dispara  o Total da entrada Y ["1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17", "1.18", "1.19", "1.20", "1.21", "1.22", "1.23", "1.24", "1.26", "1.27", "1.28", "1.29"  ]
+    Entrada=Texto+reação+contexto e Saída=Multiplicidade de textos+reação+contexto.
+DISPARA RESPOSTAS COM BASE NOS MARCADORES ÚNICOS: Se o Total da Entrada X é: ["1.1","1.2",…,"1.6"]
+    ele sempre dispara o Total da Saída Y ["1.7","1.8",…,"1.29"]
 NÃO É: Feito com embbedings ou estatísticas globais. (e isso de novo é um orgulho pra mim, não uma falha)
-FUNÇÃO: 1. Evita a generalização de universos. 2.Permite variabilidade de respostas mesmo sendo determinístico. 3. Aumenta a segurança quanto aos dados que serão exibidos. 4. Garante a integridade da rede neural e consequentemente da mente da IA.
+FUNÇÃO: 1. Evita a generalização de universos. 2. Permite variabilidade de respostas mesmo sendo determinístico.
+         3. Aumenta a segurança quanto aos dados que serão exibidos.
+         4. Garante a integridade da rede neural e consequentemente da mente da IA.
 """
 
 import os
@@ -133,8 +134,10 @@ class InsepaXY(Dataset):
         x, y = self.pares[idx]
         x_pad = x + [0.0] * (self.max_x - len(x))
         y_pad = y + [0.0] * (self.max_y - len(y))
-        return (torch.tensor(x_pad, dtype=torch.float32),
-                torch.tensor(y_pad, dtype=torch.float32))
+        return (
+            torch.tensor(x_pad, dtype=torch.float32),
+            torch.tensor(y_pad, dtype=torch.float32)
+        )
 
 
 class InsepaReg(nn.Module):
@@ -217,15 +220,31 @@ def _escolher_saida_por_modelo(model, max_x, max_y, bloco) -> dict:
 
 
 def _variacoes_da_saida(saida: dict) -> list[str]:
+    """
+    Gera variações de saída exibindo apenas S+RS.
+    Oculta qualquer string idêntica ao contexto (CS) e mantém a reação.
+    """
+    # 1. Captura variações textuais
     if "textos" in saida and saida["textos"]:
         variacoes = saida["textos"][:]
-    elif "texto" in saida:
+    elif "texto" in saida and saida["texto"].strip():
         variacoes = [saida["texto"]]
     else:
         variacoes = ["[Sem texto registrado nesta saída]"]
+
+    # 2. Filtra variações iguais ao contexto
+    ctx = (saida.get("contexto") or "").strip()
+    if ctx:
+        variacoes = [
+            v for v in variacoes
+            if normalize(v) != normalize(ctx)
+        ]
+
+    # 3. Anexa reação (emoji) ao final
     rea = (saida.get("reacao") or "").strip()
     if rea:
         variacoes = [f"{v} {rea}" for v in variacoes]
+
     return variacoes
 
 
