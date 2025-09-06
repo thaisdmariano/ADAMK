@@ -299,27 +299,34 @@ def infer(memoria: dict, dominio: str) -> None:
 
         variacoes = _variacoes_da_saida(saida_sel)
         idx = 0
-        while idx < len(variacoes):
-            print(f"\n🤖 {variacoes[idx]}")
-            idx += 1
-            entrada = input("(Enter p/ próxima | texto p/ outro bloco) ")
-            if entrada.strip():
-                novo_txt, novo_rea = parse_text_reaction(entrada, blocos)
-                key2 = normalize(novo_txt)
-                bloco_novo = next(
-                    (b for b in blocos
-                     if normalize(b["entrada"]["texto"]) == key2
-                     and b["entrada"].get("reacao", "") == novo_rea),
-                    None
-                )
-                if bloco_novo:
-                    bloco_atual = bloco_novo
-                    break
-                print("❌ Não achei esse bloco. Continuo no atual.")
-        else:
-            print("\n😔 Sem mais variações. Fim da playlist.")
-            return
 
+        # exibe a mesma variação até que o usuário aperte Enter
+        while True:
+            print(f"\n🤖 {variacoes[idx]}")
+            entrada = input("(Enter p/ próxima | texto p/ outro bloco) ").strip()
+
+            if entrada == "":
+                idx += 1
+                if idx >= len(variacoes):
+                    print("\n😔 Sem mais variações. Fim da playlist.")
+                    return
+                continue
+
+            # tenta mudar de bloco
+            novo_txt, novo_rea = parse_text_reaction(entrada, blocos)
+            bloco_novo = next(
+                (b for b in blocos
+                 if normalize(b["entrada"]["texto"]) == normalize(novo_txt)
+                 and b["entrada"].get("reacao", "") == novo_rea),
+                None
+            )
+            if bloco_novo:
+                bloco_atual = bloco_novo
+                break  # sai do loop de variações para novo bloco
+
+            print("❌ Não achei esse bloco. Continuo no atual.")
+            # idx não é alterado, então a mesma variação será reexibida
+        # fim do loop de variações, volta ao while True principal
 # ────────────────────────────────────────────────────────────────────────────────
 # Construção de parágrafos com contexto/CS oculto via SDB (não mais CBCS)
 # ────────────────────────────────────────────────────────────────────────────────
@@ -493,4 +500,5 @@ if __name__ == "__main__":
 
         else:
             print("❌ Opção inválida. Tente 1, 2, 3 ou 4.")
+
 
