@@ -199,6 +199,7 @@ def train(memoria: dict, dominio: str) -> None:
     torch.save((model.state_dict(), ds.max_x, ds.max_y), CKPT)
     print(f"✅ Treino concluído. Checkpoint salvo em '{CKPT}'\n")
 
+
 # ────────────────────────────────────────────────────────────────────────────────
 # Inferência interativa PIDE, EXDS E IME agora calculados
 # ────────────────────────────────────────────────────────────────────────────────
@@ -277,56 +278,64 @@ def infer(memoria: dict, dominio: str) -> None:
     model.load_state_dict(state)
     model.eval()
 
-    raw = input("👤 Entrada + Reação: ")
-    txt, rea = parse_text_reaction(raw, blocos)
-    key = normalize(txt)
-
-    bloco_atual = next(
-        (b for b in blocos
-         if normalize(b["entrada"]["texto"]) == key
-         and b["entrada"].get("reacao", "") == rea),
-        None
-    )
-    if not bloco_atual:
-        print("❌ Entrada+reação não cadastrada neste universo.")
-        return
-
+    # loop principal: repete até usuário digitar 'sair'
     while True:
-        saida_sel = _escolher_saida_por_modelo(model, max_x, max_y, bloco_atual)
-        if not saida_sel:
-            print("⚠️ Bloco atual sem saídas.")
+        raw = input("👤 Entrada + Reação ('sair' p/ encerrar): ").strip()
+        if raw.lower() == "sair":
+            print("Inferência encerrada pelo usuário.")
             return
 
-        variacoes = _variacoes_da_saida(saida_sel)
-        idx = 0
+        txt, rea = parse_text_reaction(raw, blocos)
+        key = normalize(txt)
+        bloco_atual = next(
+            (b for b in blocos
+             if normalize(b["entrada"]["texto"]) == key
+             and b["entrada"].get("reacao", "") == rea),
+            None
+        )
+        if not bloco_atual:
+            print("❌ Entrada+reação não cadastrada neste universo.")
+            continue
 
-        # exibe a mesma variação até que o usuário aperte Enter
+        # gera variações em loop infinito até trocar de bloco ou digitar 'sair'
         while True:
-            print(f"\n🤖 {variacoes[idx]}")
-            entrada = input("(Enter p/ próxima | texto p/ outro bloco) ").strip()
+            saida_sel = _escolher_saida_por_modelo(model, max_x, max_y, bloco_atual)
+            if not saida_sel:
+                print("⚠️ Bloco atual sem saídas.")
+                return
 
-            if entrada == "":
-                idx += 1
-                if idx >= len(variacoes):
-                    print("\n😔 Sem mais variações. Fim da playlist.")
+            variacoes = _variacoes_da_saida(saida_sel)
+            idx = 0
+
+            while True:
+                print(f"\n🤖 {variacoes[idx]}")
+                entrada = input("(Enter p/ próxima | texto p/ outro bloco | 'sair' p/ encerrar) ").strip()
+
+                if entrada.lower() == "sair":
+                    print("Inferência encerrada pelo usuário.")
                     return
-                continue
 
-            # tenta mudar de bloco
-            novo_txt, novo_rea = parse_text_reaction(entrada, blocos)
-            bloco_novo = next(
-                (b for b in blocos
-                 if normalize(b["entrada"]["texto"]) == normalize(novo_txt)
-                 and b["entrada"].get("reacao", "") == novo_rea),
-                None
-            )
-            if bloco_novo:
-                bloco_atual = bloco_novo
-                break  # sai do loop de variações para novo bloco
+                if entrada == "":
+                    # wrap-around: continua indefinidamente
+                    idx = (idx + 1) % len(variacoes)
+                    continue
 
-            print("❌ Não achei esse bloco. Continuo no atual.")
-            # idx não é alterado, então a mesma variação será reexibida
-        # fim do loop de variações, volta ao while True principal
+                # tentativa de mudar de bloco
+                novo_txt, novo_rea = parse_text_reaction(entrada, blocos)
+                bloco_novo = next(
+                    (b for b in blocos
+                     if normalize(b["entrada"]["texto"]) == normalize(novo_txt)
+                     and b["entrada"].get("reacao", "") == novo_rea),
+                    None
+                )
+                if bloco_novo:
+                    bloco_atual = bloco_novo
+                    break
+
+                print("❌ Não achei esse bloco. Continuo no atual.")
+            # fim do loop de variações
+        # fim do loop de bloco atual
+    # fim do loop principal
 # ────────────────────────────────────────────────────────────────────────────────
 # Construção de parágrafos com contexto/CS oculto via SDB (não mais CBCS)
 # ────────────────────────────────────────────────────────────────────────────────
@@ -500,5 +509,6 @@ if __name__ == "__main__":
 
         else:
             print("❌ Opção inválida. Tente 1, 2, 3 ou 4.")
+
 
 
