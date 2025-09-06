@@ -199,7 +199,6 @@ def train(memoria: dict, dominio: str) -> None:
     torch.save((model.state_dict(), ds.max_x, ds.max_y), CKPT)
     print(f"✅ Treino concluído. Checkpoint salvo em '{CKPT}'\n")
 
-
 # ────────────────────────────────────────────────────────────────────────────────
 # Inferência interativa PIDE, EXDS E IME agora calculados
 # ────────────────────────────────────────────────────────────────────────────────
@@ -242,10 +241,6 @@ def _escolher_saida_por_modelo(model, max_x, max_y, bloco) -> dict:
     return saidas[best_idx]
 
 def _variacoes_da_saida(saida: dict) -> list[str]:
-    """
-    Gera variações de saída exibindo apenas S+RS.
-    Oculta qualquer string idêntica ao contexto (CS) e mantém a reação.
-    """
     if "textos" in saida and saida["textos"]:
         variacoes = saida["textos"][:]
     elif "texto" in saida and saida["texto"].strip():
@@ -278,7 +273,6 @@ def infer(memoria: dict, dominio: str) -> None:
     model.load_state_dict(state)
     model.eval()
 
-    # loop principal: repete até usuário digitar 'sair'
     while True:
         raw = input("👤 Entrada + Reação ('sair' p/ encerrar): ").strip()
         if raw.lower() == "sair":
@@ -286,10 +280,9 @@ def infer(memoria: dict, dominio: str) -> None:
             return
 
         txt, rea = parse_text_reaction(raw, blocos)
-        key = normalize(txt)
         bloco_atual = next(
             (b for b in blocos
-             if normalize(b["entrada"]["texto"]) == key
+             if normalize(b["entrada"]["texto"]) == normalize(txt)
              and b["entrada"].get("reacao", "") == rea),
             None
         )
@@ -297,7 +290,9 @@ def infer(memoria: dict, dominio: str) -> None:
             print("❌ Entrada+reação não cadastrada neste universo.")
             continue
 
-        # gera variações em loop infinito até trocar de bloco ou digitar 'sair'
+        idx = 0
+        immersive_mode = False
+
         while True:
             saida_sel = _escolher_saida_por_modelo(model, max_x, max_y, bloco_atual)
             if not saida_sel:
@@ -305,23 +300,32 @@ def infer(memoria: dict, dominio: str) -> None:
                 return
 
             variacoes = _variacoes_da_saida(saida_sel)
-            idx = 0
+
+            print(f"\n🤖 {variacoes[idx]}")
 
             while True:
-                print(f"\n🤖 {variacoes[idx]}")
-                entrada = input("(Enter p/ próxima | texto p/ outro bloco | 'sair' p/ encerrar) ").strip()
+                cmd = input("(Enter p/ próxima | Insight | Roleplay | 'sair' p/ encerrar) ").strip().lower()
 
-                if entrada.lower() == "sair":
+                if cmd == "sair":
                     print("Inferência encerrada pelo usuário.")
                     return
 
-                if entrada == "":
-                    # wrap-around: continua indefinidamente
-                    idx = (idx + 1) % len(variacoes)
+                if cmd == "insight":
+                    print(f"\n💡 {saida_sel['explicacao']}")
                     continue
 
-                # tentativa de mudar de bloco
-                novo_txt, novo_rea = parse_text_reaction(entrada, blocos)
+                if cmd == "roleplay":
+                    idx = (idx + 1) % len(variacoes)
+                    print(f"\n🤖 {variacoes[idx]}")
+                    print(f"🎬 {saida_sel['imersao']}")
+                    continue
+
+                if cmd == "":
+                    idx = (idx + 1) % len(variacoes)
+                    print(f"\n🤖 {variacoes[idx]}")
+                    continue
+
+                novo_txt, novo_rea = parse_text_reaction(cmd, blocos)
                 bloco_novo = next(
                     (b for b in blocos
                      if normalize(b["entrada"]["texto"]) == normalize(novo_txt)
@@ -333,9 +337,6 @@ def infer(memoria: dict, dominio: str) -> None:
                     break
 
                 print("❌ Não achei esse bloco. Continuo no atual.")
-            # fim do loop de variações
-        # fim do loop de bloco atual
-    # fim do loop principal
 # ────────────────────────────────────────────────────────────────────────────────
 # Construção de parágrafos com contexto/CS oculto via SDB (não mais CBCS)
 # ────────────────────────────────────────────────────────────────────────────────
@@ -509,6 +510,3 @@ if __name__ == "__main__":
 
         else:
             print("❌ Opção inválida. Tente 1, 2, 3 ou 4.")
-
-
-
