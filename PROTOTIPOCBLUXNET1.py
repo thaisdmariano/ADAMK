@@ -1,24 +1,30 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
-ADAMK – Chatbot Insepa by Thaís D' Mariano
-Script completo com normalização de pontuação ajustada apenas para
-os Separadores Genéricos (vírgula, ponto, ponto-e-vírgula e dois-pontos).
-
-O INSEPA: É um sistema de tokenização que permite que a leitura dos dados seja efetuada pela máquina. Tal como um humano leria um livro.
-ACEITA: Pontuação, emojis e Contexto tudo embutido.
-DELIMITA: todas as palavras com marcadores únicos baseados no índice mãe, que permitem variabilidade de dados sem cair em ambiguidades. [Mãe 1, filhos 1.1, 1.2,1.3]
-DIVIDE: Cada universo é treinado com base na mãe, portanto os dados jamais se generalizam (o quê é motivo de orgulho e não falha) [Mãe 1 ≠ Mãe 2]
+O INSEPA: É um sistema de tokenização que permite que a leitura dos dados seja efetuada pela máquina.
+Tal como um humano leria um livro. ACEITA: Pontuação, emojis, stopwords e tudo que outros sistemas rejeitam.
+DELIMITA: todas as palavras com marcadores únicos baseados no índice mãe, que permitem variabilidade de dados sem cair em ambiguidades. [Índice Mãe 1, filhos 1.1, 1.2,1.3]
+DIVIDE: Cada universo é treinado com base na mãe, portanto os dados jamais se generalizam (o quê é motivo de orgulho e não falha) [Índice Mãe 1 ≠ Índice Mãe 2]
 ORGANIZA: os dados de índices filhos por blocos inseparizados que se dividem em:
-    Entrada=Texto+reação+contexto e Saída=Multiplicidade de textos+reação+contexto.
-DISPARA RESPOSTAS COM BASE NOS MARCADORES ÚNICOS: Se o Total da Entrada X é: ["1.1","1.2",…,"1.6"]
-    ele sempre dispara o Total da Saída Y ["1.7","1.8",…,"1.29"]
-NÃO É: Feito com embbedings ou estatísticas globais. (e isso de novo é um orgulho pra mim, não uma falha)
-FUNÇÃO: 1. Evita a generalização de universos. 2. Permite variabilidade de respostas mesmo sendo determinístico.
-         3. Aumenta a segurança quanto aos dados que serão exibidos.
-         4. Garante a integridade da rede neural e consequentemente da mente da IA.
+  Entrada=Texto +reação+contexto+pensamento interno
+  Saída=Multiplicidade de textos+reação+contexto+explicação+imersão
+DISPARA RESPOSTAS COM BASE NOS MARCADORES ÚNICOS: Se o Total da Entrada X (E+RE+CE+PIDE) é:
+  ["1.1", "1.2", ..., "1.9"]
+ele sempre dispara o Total da entrada Y (S+RS+CS+EXDS+IME)
+  ["1.10", ..., "1.37"]
+PERMITE QUE A MÁQUINA FAÇA A DIFERENCIAÇÃO DE DADOS PRÉVIOS E OS RESULTADOS DELES:
+  Texto+reação+contexto de entrada e de saída são 100% tokenizados,
+  mas os campos de Pensamento Interno da entrada, e Explicação e Imersão da saída recebem apenas 3 marcadores únicos.
+  [Texto= Oi. E: 0.1, 02 ≠ Explicação= Olha que legal. EXDS: 0.3, 0.4, 0.5]
+MANTÉM A COERÊNCIA DE VARIABILIDADE: Cada Bloco possui um ID, cada ID pode ser combinado para gerar um Conjunto de Blocos que segue uma determinada sequência, e caso a sequência possua uma harmonia semântica ela recebe o selo de validação aceita, por meio de um sistema booleano.
+  [B1+B2= CB > SDB > VA (True ou False)]
+NÃO É: Feito com embbedings ou estatísticas globais.
+FUNÇÃO:
+  1. Evita a generalização de universos.
+  2. Permite variabilidade de respostas mesmo sendo determinístico.
+  3. Aumenta a segurança quanto aos dados que serão exibidos.
+  4. Garante a integridade da rede neural e consequentemente da mente da IA.
 """
 
 import os
@@ -38,7 +44,7 @@ CKPT            = "insepa_xy.pt"
 
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Utilitários
+# Utilitários apenas faça com PIDE, EXDS E IME sejam calculados
 # ────────────────────────────────────────────────────────────────────────────────
 
 def garantir_pontuacao(txt: str) -> str:
@@ -72,15 +78,26 @@ def _saida_tokens_legacy_or_insepa(saida: dict) -> tuple[list[str], list[str], l
 
 
 def xy_from_block_many(b: dict) -> list[tuple[list[float], list[float]]]:
-    Ein  = [float(v) for v in b["entrada"]["tokens"].get("E", [])]
-    REin = [float(v) for v in b["entrada"]["tokens"].get("RE", [])]
-    CEin = [float(v) for v in b["entrada"]["tokens"].get("CE", [])]
-    X    = Ein + REin + CEin
+    # Entrada agora inclui também tokens de PIDE
+    t_in   = b["entrada"]["tokens"]
+    Ein    = [float(v) for v in t_in.get("E", [])]
+    REin   = [float(v) for v in t_in.get("RE", [])]
+    CEin   = [float(v) for v in t_in.get("CE", [])]
+    PIDEin = [float(v) for v in t_in.get("PIDE", [])]
+    X      = Ein + REin + CEin + PIDEin
 
     pares = []
-    for saida in b.get("saidas", []) or ([b.get("saida")] if b.get("saida") else []):
-        S, RS, CS = _saida_tokens_legacy_or_insepa(saida)
-        pares.append((X, [float(v) for v in (S + RS + CS)]))
+    # Saídas agora incluem também tokens EXDS e IME
+    for saida in b.get("saidas") or ([b.get("saida")] if b.get("saida") else []):
+        t_out = saida.get("tokens", {})
+        S     = [float(v) for v in t_out.get("S", [])]
+        RS    = [float(v) for v in t_out.get("RS", [])]
+        CS    = [float(v) for v in t_out.get("CS", [])]
+        EXDS  = [float(v) for v in t_out.get("EXDS", [])]
+        IME   = [float(v) for v in t_out.get("IME", [])]
+        Y     = S + RS + CS + EXDS + IME
+        pares.append((X, Y))
+
     return pares
 
 
@@ -113,12 +130,13 @@ def normalize(txt: str) -> str:
 
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Dataset e modelo
+# Dataset e modelo (usando Índice-Mãe 'IM' em vez de 'maes')
 # ────────────────────────────────────────────────────────────────────────────────
 
 class InsepaXY(Dataset):
     def __init__(self, memoria: dict, dominio: str):
-        blocos = memoria["maes"][dominio]["blocos"]
+        # Agora busca blocos em memoria["IM"] (maiúsculo)
+        blocos = memoria["IM"][dominio]["blocos"]
         self.pares = []
         for b in blocos:
             self.pares.extend(xy_from_block_many(b))
@@ -181,22 +199,26 @@ def train(memoria: dict, dominio: str) -> None:
     torch.save((model.state_dict(), ds.max_x, ds.max_y), CKPT)
     print(f"✅ Treino concluído. Checkpoint salvo em '{CKPT}'\n")
 
-
 # ────────────────────────────────────────────────────────────────────────────────
-# Inferência interativa
+# Inferência interativa PIDE, EXDS E IME agora calculados
 # ────────────────────────────────────────────────────────────────────────────────
 
 def _montar_X_do_bloco(b: dict) -> list[float]:
-    Ein  = [float(v) for v in b["entrada"]["tokens"].get("E", [])]
-    REin = [float(v) for v in b["entrada"]["tokens"].get("RE", [])]
-    CEin = [float(v) for v in b["entrada"]["tokens"].get("CE", [])]
-    return Ein + REin + CEin
-
+    t_in   = b["entrada"]["tokens"]
+    Ein    = [float(v) for v in t_in.get("E", [])]
+    REin   = [float(v) for v in t_in.get("RE", [])]
+    CEin   = [float(v) for v in t_in.get("CE", [])]
+    PIDEin = [float(v) for v in t_in.get("PIDE", [])]
+    return Ein + REin + CEin + PIDEin
 
 def _montar_Y_da_saida(saida: dict) -> list[float]:
-    S, RS, CS = _saida_tokens_legacy_or_insepa(saida)
-    return [float(v) for v in (S + RS + CS)]
-
+    t_out = saida.get("tokens", {})
+    S     = [float(v) for v in t_out.get("S", [])]
+    RS    = [float(v) for v in t_out.get("RS", [])]
+    CS    = [float(v) for v in t_out.get("CS", [])]
+    EXDS  = [float(v) for v in t_out.get("EXDS", [])]
+    IME   = [float(v) for v in t_out.get("IME", [])]
+    return S + RS + CS + EXDS + IME
 
 def _escolher_saida_por_modelo(model, max_x, max_y, bloco) -> dict:
     X     = _montar_X_do_bloco(bloco)
@@ -218,13 +240,11 @@ def _escolher_saida_por_modelo(model, max_x, max_y, bloco) -> dict:
 
     return saidas[best_idx]
 
-
 def _variacoes_da_saida(saida: dict) -> list[str]:
     """
     Gera variações de saída exibindo apenas S+RS.
     Oculta qualquer string idêntica ao contexto (CS) e mantém a reação.
     """
-    # 1. Captura variações textuais
     if "textos" in saida and saida["textos"]:
         variacoes = saida["textos"][:]
     elif "texto" in saida and saida["texto"].strip():
@@ -232,21 +252,15 @@ def _variacoes_da_saida(saida: dict) -> list[str]:
     else:
         variacoes = ["[Sem texto registrado nesta saída]"]
 
-    # 2. Filtra variações iguais ao contexto
     ctx = (saida.get("contexto") or "").strip()
     if ctx:
-        variacoes = [
-            v for v in variacoes
-            if normalize(v) != normalize(ctx)
-        ]
+        variacoes = [v for v in variacoes if normalize(v) != normalize(ctx)]
 
-    # 3. Anexa reação (emoji) ao final
     rea = (saida.get("reacao") or "").strip()
     if rea:
         variacoes = [f"{v} {rea}" for v in variacoes]
 
     return variacoes
-
 
 def infer(memoria: dict, dominio: str) -> None:
     if not os.path.exists(CKPT):
@@ -254,7 +268,7 @@ def infer(memoria: dict, dominio: str) -> None:
         train(memoria, dominio)
 
     state, max_x, max_y = torch.load(CKPT)
-    blocos = memoria["maes"].get(dominio, {}).get("blocos", [])
+    blocos = memoria["IM"].get(dominio, {}).get("blocos", [])
     if not blocos:
         print("❌ Universo não encontrado ou sem blocos.")
         return
@@ -306,9 +320,8 @@ def infer(memoria: dict, dominio: str) -> None:
             print("\n😔 Sem mais variações. Fim da playlist.")
             return
 
-
 # ────────────────────────────────────────────────────────────────────────────────
-# Construção de parágrafos com contexto/CS oculto
+# Construção de parágrafos com contexto/CS oculto via SDB (não mais CBCS)
 # ────────────────────────────────────────────────────────────────────────────────
 
 def _is_hidden_block(bloco: dict) -> bool:
@@ -338,35 +351,30 @@ def build_paragraphs_with_emojis(
     randomize: bool = False
 ) -> dict[tuple, list[str]]:
     """
-    Gera todas as combinações de parágrafos para cada sequência de bloco_id:
-      - esconde texto e emoji dos blocos de contexto/CS
-      - filtra de cada 'textos' qualquer string idêntica ao campo 'contexto'
-      - concatena apenas textos visíveis e, no final, exibe emojis visíveis
+    Gera combinações de parágrafos para cada sequência em SDB:
+      - considera CB > Status > SDB > VA > Validation
+      - esconde texto/emoji em blocos de contexto/CS
+      - filtra variações idênticas ao contexto
+      - concatena textos visíveis e lista emojis no final
     """
-    universo   = memoria["maes"][dominio]
+    universo   = memoria["IM"][dominio]
     blocos     = universo["blocos"]
 
-    # extrai sequências CBCS
-    if "cb" in universo:
-        cb_info   = universo["cb"]
-        bids      = set(cb_info.get("bids", []))
-        sequences = universo.get("cbcs", [])
-    else:
-        bloco_cb  = next((b for b in blocos if "CB" in b), {})
-        cb_info   = bloco_cb.get("CB", {})
-        bids      = set(cb_info.get("BIDS", []))
-        sequences = cb_info.get("CBCS", [])
+    cb_info    = universo.get("CB", {})
+    # só segue se Status == "Disponível" e Validation == True
+    if cb_info.get("Status", "").lower() != "disponível":
+        return {}
+    if not cb_info.get("Validation", True):
+        return {}
 
+    sequences  = cb_info.get("SDB", [])
     resultados = {}
+
     for seq in sequences:
         opcoes_por_bloco = []
         valido = True
 
         for bid in seq:
-            if bids and bid not in bids:
-                valido = False
-                break
-
             bloco = next(
                 (b for b in blocos if b.get("bloco_id") == bid and b.get("open")),
                 None
@@ -384,7 +392,6 @@ def build_paragraphs_with_emojis(
             reacao       = (saida.get("reacao") or "").strip()
             contexto_txt = (saida.get("contexto") or "").strip()
 
-            # filtra quaisquer variações idênticas ao contexto
             if contexto_txt:
                 textos = [t for t in textos if normalize(t) != normalize(contexto_txt)]
 
@@ -392,7 +399,6 @@ def build_paragraphs_with_emojis(
                 random.shuffle(textos)
 
             if _is_hidden_block(bloco):
-                # esconde texto e emoji
                 opcoes_bloco = [("", "")]
             else:
                 opcoes_bloco = [(t, reacao) for t in textos]
@@ -414,8 +420,9 @@ def build_paragraphs_with_emojis(
         for combo in combinacoes:
             partes  = [t for t, _ in combo if t.strip()]
             reacoes = [r for _, r in combo if r.strip()]
-            base    = " ".join(partes).strip()
-            texto   = base + (f"\nEmojis: {''.join(reacoes)}" if reacoes else "")
+            texto   = " ".join(partes).strip()
+            if reacoes:
+                texto += f"\nEmojis: {''.join(reacoes)}"
             paragrafos.append(texto)
 
         resultados[tuple(seq)] = paragrafos
@@ -427,7 +434,7 @@ def criar_paragrafos_cli(memoria: dict):
     dom = input("→ Índice-mãe p/ gerar parágrafos (ou 'sair'): ").strip()
     if dom.lower() == "sair":
         return
-    if dom not in memoria["maes"]:
+    if dom not in memoria["IM"]:
         print(f"⚠️ Universo '{dom}' não existe.")
         return
 
@@ -438,13 +445,13 @@ def criar_paragrafos_cli(memoria: dict):
 
 
 # ────────────────────────────────────────────────────────────────────────────────
-# CLI principal
+# CLI principal (agora usando IM em vez de 'maes', e SDB em vez de CBCS)
 # ────────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     if not os.path.exists(ARQUIVO_MEMORIA):
         with open(ARQUIVO_MEMORIA, "w", encoding="utf-8") as f:
-            json.dump({"maes": {}}, f, ensure_ascii=False, indent=2)
+            json.dump({"IM": {}}, f, ensure_ascii=False, indent=2)
 
     memoria = json.load(open(ARQUIVO_MEMORIA, "r", encoding="utf-8"))
 
@@ -452,7 +459,7 @@ if __name__ == "__main__":
         print("\n=== Menu Principal ===")
         print("1) Treinar rede neural")
         print("2) Inferir com rede neural")
-        print("3) Gerar parágrafos CBCS")
+        print("3) Gerar parágrafos SDB")
         print("4) Sair do programa")
         opc = input("Escolha uma opção (1/2/3/4): ").strip()
 
@@ -461,7 +468,7 @@ if __name__ == "__main__":
                 dom = input("→ Índice-mãe p/ treinar (ou 'sair' p/ voltar): ").strip()
                 if dom.lower() == "sair":
                     break
-                if dom not in memoria["maes"]:
+                if dom not in memoria["IM"]:
                     print(f"⚠️ Universo '{dom}' não existe.")
                     continue
                 train(memoria, dom)
@@ -471,7 +478,7 @@ if __name__ == "__main__":
                 dom = input("→ Índice-mãe p/ inferir (ou 'sair' p/ voltar): ").strip()
                 if dom.lower() == "sair":
                     break
-                if dom not in memoria["maes"]:
+                if dom not in memoria["IM"]:
                     print(f"⚠️ Universo '{dom}' não existe.")
                     continue
                 infer(memoria, dom)
