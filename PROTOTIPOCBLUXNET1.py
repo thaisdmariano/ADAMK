@@ -203,6 +203,19 @@ def train(memoria: dict, dominio: str) -> None:
 # Inferência interativa PIDE, EXDS E IME agora calculados
 # ────────────────────────────────────────────────────────────────────────────────
 
+import os
+import torch
+
+def gerar_explicacao_padrao(saida: dict, entrada: dict) -> str:
+    texto    = entrada.get("texto", "").strip()
+    reacao   = entrada.get("reacao", "").strip()
+    contexto = entrada.get("contexto", "").strip()
+    return (
+        f"💡 De acordo com a entrada \"{texto}\", "
+        f"a reação \"{reacao}\" e o contexto \"{contexto}\", "
+        "concluo que esta é a melhor resposta."
+    )
+
 def _montar_X_do_bloco(b: dict) -> list[float]:
     t_in   = b["entrada"]["tokens"]
     Ein    = [float(v) for v in t_in.get("E", [])]
@@ -301,42 +314,57 @@ def infer(memoria: dict, dominio: str) -> None:
 
             variacoes = _variacoes_da_saida(saida_sel)
 
-            print(f"\n🤖 {variacoes[idx]}")
+            if immersive_mode:
+                print(f"\n🎬 {saida_sel['imersao']}")
+            print(f"🤖 {variacoes[idx]}")
 
-            while True:
-                cmd = input("(Enter p/ próxima | Insight | Roleplay | 'sair' p/ encerrar) ").strip().lower()
+            cmd = input("(Enter p/ próxima | Insight | Roleplay | 'sair' p/ encerrar) ").strip().lower()
 
-                if cmd == "sair":
-                    print("Inferência encerrada pelo usuário.")
-                    return
+            if cmd == "sair":
+                print("Inferência encerrada pelo usuário.")
+                return
 
-                if cmd == "insight":
-                    print(f"\n💡 {saida_sel['explicacao']}")
-                    continue
-
-                if cmd == "roleplay":
-                    idx = (idx + 1) % len(variacoes)
-                    print(f"\n🤖 {variacoes[idx]}")
-                    print(f"🎬 {saida_sel['imersao']}")
-                    continue
-
-                if cmd == "":
-                    idx = (idx + 1) % len(variacoes)
-                    print(f"\n🤖 {variacoes[idx]}")
-                    continue
-
-                novo_txt, novo_rea = parse_text_reaction(cmd, blocos)
-                bloco_novo = next(
-                    (b for b in blocos
-                     if normalize(b["entrada"]["texto"]) == normalize(novo_txt)
-                     and b["entrada"].get("reacao", "") == novo_rea),
-                    None
+            if cmd == "insight":
+                # insight manual inclui texto, reação e contexto
+                ent      = bloco_atual["entrada"]
+                texto    = ent["texto"].strip()
+                reacao   = ent["reacao"].strip()
+                contexto = ent["contexto"].strip()
+                print(
+                    f"\n💡 De acordo com a entrada \"{texto}\", "
+                    f"a reação \"{reacao}\" e o contexto \"{contexto}\", "
+                    "concluo que esta é a melhor resposta."
                 )
-                if bloco_novo:
-                    bloco_atual = bloco_novo
-                    break
+                print("(Enter p/ próxima | Insight | Roleplay | 'sair' p/ encerrar) ", end="")
+                continue
 
-                print("❌ Não achei esse bloco. Continuo no atual.")
+            if cmd == "roleplay":
+                immersive_mode = True
+                idx = (idx + 1) % len(variacoes)
+                print(f"\n🎬 {saida_sel['imersao']}")
+                print(f"🤖 {variacoes[idx]}")
+                continue
+
+            if cmd == "":
+                idx = (idx + 1) % len(variacoes)
+                if immersive_mode:
+                    print(f"\n🎬 {saida_sel['imersao']}")
+                print(f"🤖 {variacoes[idx]}")
+                continue
+
+            novo_txt, novo_rea = parse_text_reaction(cmd, blocos)
+            bloco_novo = next(
+                (b for b in blocos
+                 if normalize(b["entrada"]["texto"]) == normalize(novo_txt)
+                 and b["entrada"].get("reacao", "") == novo_rea),
+                None
+            )
+            if bloco_novo:
+                bloco_atual = bloco_novo
+                idx = 0
+                break
+
+            print("❌ Não achei esse bloco. Continuo no atual.")
 # ────────────────────────────────────────────────────────────────────────────────
 # Construção de parágrafos com contexto/CS oculto via SDB (não mais CBCS)
 # ────────────────────────────────────────────────────────────────────────────────
@@ -510,3 +538,4 @@ if __name__ == "__main__":
 
         else:
             print("❌ Opção inválida. Tente 1, 2, 3 ou 4.")
+
