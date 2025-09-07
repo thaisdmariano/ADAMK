@@ -200,7 +200,7 @@ def train(memoria: dict, dominio: str) -> None:
     print(f"✅ Treino concluído. Checkpoint salvo em '{CKPT}'\n")
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Inferência interativa PIDE, EXDS E IME agora calculados
+# Inferência interativa PIDE, EXDS E IME agora calculados (Insight limpo)
 # ────────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -303,8 +303,9 @@ def infer(memoria: dict, dominio: str) -> None:
             print("❌ Entrada+reação não cadastrada neste universo.")
             continue
 
-        idx = 0
+        idx            = 0
         immersive_mode = False
+        skip_variacao  = False
 
         while True:
             saida_sel = _escolher_saida_por_modelo(model, max_x, max_y, bloco_atual)
@@ -314,9 +315,20 @@ def infer(memoria: dict, dominio: str) -> None:
 
             variacoes = _variacoes_da_saida(saida_sel)
 
-            if immersive_mode:
-                print(f"\n🎬 {saida_sel['imersao']}")
-            print(f"🤖 {variacoes[idx]}")
+            # prepara os campos de Insight e Explicação
+            exds_list      = saida_sel.get("tokens", {}).get("EXDS", [])
+            has_exds       = bool(exds_list)
+            explic_texto   = (
+                saida_sel.get("explicacao")
+                or gerar_explicacao_padrao(saida_sel, bloco_atual["entrada"])
+            )
+
+            # exibe variação apenas se não veio de um Insight anterior
+            if not skip_variacao:
+                if immersive_mode:
+                    print(f"\n🎬 {saida_sel['imersao']}")
+                print(f"🤖 {variacoes[idx]}")
+            skip_variacao = False
 
             cmd = input("(Enter p/ próxima | Insight | Roleplay | 'sair' p/ encerrar) ").strip().lower()
 
@@ -325,33 +337,26 @@ def infer(memoria: dict, dominio: str) -> None:
                 return
 
             if cmd == "insight":
-                # insight manual inclui texto, reação e contexto
-                ent      = bloco_atual["entrada"]
-                texto    = ent["texto"].strip()
-                reacao   = ent["reacao"].strip()
-                contexto = ent["contexto"].strip()
-                print(
-                    f"\n💡 De acordo com a entrada \"{texto}\", "
-                    f"a reação \"{reacao}\" e o contexto \"{contexto}\", "
-                    "concluo que esta é a melhor resposta."
-                )
-                print("(Enter p/ próxima | Insight | Roleplay | 'sair' p/ encerrar) ", end="")
+                # Situação 2: há EXDS → só Insight limpo (texto da explicação)
+                if has_exds:
+                    print(f"\n💡{explic_texto}\n")
+                # Situação 1: sem EXDS → só Explicação fallback
+                else:
+                    print(f"\n🔍 Explicação: {explic_texto}\n")
+                # sinaliza para pular a variação na próxima iteração
+                skip_variacao = True
                 continue
 
             if cmd == "roleplay":
                 immersive_mode = True
                 idx = (idx + 1) % len(variacoes)
-                print(f"\n🎬 {saida_sel['imersao']}")
-                print(f"🤖 {variacoes[idx]}")
                 continue
 
             if cmd == "":
                 idx = (idx + 1) % len(variacoes)
-                if immersive_mode:
-                    print(f"\n🎬 {saida_sel['imersao']}")
-                print(f"🤖 {variacoes[idx]}")
                 continue
 
+            # comando como nova entrada+reação
             novo_txt, novo_rea = parse_text_reaction(cmd, blocos)
             bloco_novo = next(
                 (b for b in blocos
@@ -361,8 +366,7 @@ def infer(memoria: dict, dominio: str) -> None:
             )
             if bloco_novo:
                 bloco_atual = bloco_novo
-                idx = 0
-                break
+                break  # volta ao nível superior para nova inferência
 
             print("❌ Não achei esse bloco. Continuo no atual.")
 # ────────────────────────────────────────────────────────────────────────────────
@@ -538,4 +542,5 @@ if __name__ == "__main__":
 
         else:
             print("❌ Opção inválida. Tente 1, 2, 3 ou 4.")
+
 
