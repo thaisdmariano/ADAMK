@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # coding: utf-8
-"""
+r"""
 insepa_update.py — Cole o bloco template INSEPA e atualize
-adam_memoria.json em um único passo, sem sobrescrever IMs existentes.
+adam_memoria.json em um único passo, respeitando INSEPA sem warnings.
 
 Fluxo:
- 1. Execute: python insepa_update.py
+ 1. python insepa_update.py
  2. Cole (Ctrl+V) seu bloco template INSEPA completo
- 3. Pressione Enter em branco para finalizar a leitura
- 4. O script cria o IM se não existir, gera marcadores
-    mom.child, anexa o bloco, atualiza cb.sdb e salva em adam_memoria.json
+ 3. Pressione Enter em branco para finalizar
+ 4. O script cria o IM se não existir, gera marcadores mom.child,
+    anexa o bloco, atualiza cb.sdb e salva em adam_memoria.json
 """
 
 import sys
@@ -18,7 +18,11 @@ import re
 from typing import List, Dict, Any, Optional
 
 def Token(text: str) -> List[str]:
-    """INSEPA tokenização: mantém palavras, pontuação, emojis, stopwords."""
+    r"""
+    INSEPA tokenização:
+      aceita palavras, pontuação, emojis, stopwords, tudo.
+    Regex usada: r'\w+|[^\w\s]'
+    """
     return re.findall(r'\w+|[^\w\s]', text, re.UNICODE)
 
 def next_marker(prev: str) -> str:
@@ -39,8 +43,19 @@ def parse_template(lines: List[str]) -> Dict[str, Any]:
     tpl = {
         "indice_mae": None,
         "nome": "",
-        "entrada": {"texto":"", "reacao":"", "contexto":"", "pensamento_interno":""},
-        "saida":   {"textos":[], "reacao":"", "contexto":"", "explicacao":"", "imersao":""}
+        "entrada": {
+            "texto": "",
+            "reacao": "",
+            "contexto": "",
+            "pensamento_interno": ""
+        },
+        "saida": {
+            "textos": [],
+            "reacao": "",
+            "contexto": "",
+            "explicacao": "",
+            "imersao": ""
+        }
     }
     section: Optional[str] = None
 
@@ -49,18 +64,19 @@ def parse_template(lines: List[str]) -> Dict[str, Any]:
         if not line:
             continue
 
-        # Índice mãe e Nome
-        if line.startswith("Índice mãe:"):
-            tpl["indice_mae"] = int(line.split(":",1)[1].strip())
+        # Índice mãe
+        if m := re.match(r'^Índice mãe:\s*(\d+)', line):
+            tpl["indice_mae"] = int(m.group(1))
             continue
-        if line.startswith("Nome:"):
-            tpl["nome"] = line.split(":",1)[1].strip()
+
+        # Nome
+        if m := re.match(r'^Nome:\s*(.+)', line):
+            tpl["nome"] = m.group(1).strip()
             continue
 
         # Entrada inline
-        m_ent = re.match(r'^Entrada:\s*(.+)', line)
-        if m_ent:
-            tpl["entrada"]["texto"] = m_ent.group(1).strip()
+        if m := re.match(r'^Entrada:\s*(.+)', line):
+            tpl["entrada"]["texto"] = m.group(1).strip()
             section = "entrada"
             continue
 
@@ -72,36 +88,40 @@ def parse_template(lines: List[str]) -> Dict[str, Any]:
             section = "saida_textos"
             continue
 
-        # Campos de entrada
-        if section == "entrada":
-            if line.startswith("Texto:"):
-                tpl["entrada"]["texto"] = line.split(":",1)[1].strip()
-            elif line.lower().startswith("reação:"):
-                tpl["entrada"]["reacao"] = line.split(":",1)[1].strip()
-            elif line.lower().startswith("contexto:"):
-                tpl["entrada"]["contexto"] = line.split(":",1)[1].strip()
-            elif line.lower().startswith("pensamento interno:"):
-                tpl["entrada"]["pensamento_interno"] = line.split(":",1)[1].strip()
-
-        # Linhas de saída
-        elif section == "saida_textos":
-            m = re.match(r'^\d+\.\s*(.+)', line)
-            if m:
-                tpl["saida"]["textos"].append(m.group(1).strip())
+        # Reação (entrada ou saída)
+        if m := re.match(r'^[Rr]eação:\s*(.+)', line):
+            if section == "entrada":
+                tpl["entrada"]["reacao"] = m.group(1).strip()
             else:
-                section = "saida_meta"
-                # continua para processar meta nesta mesma linha
+                tpl["saida"]["reacao"] = m.group(1).strip()
+            continue
 
-        # Campos de meta-saída
-        elif section == "saida_meta":
-            if line.lower().startswith("reação:"):
-                tpl["saida"]["reacao"] = line.split(":",1)[1].strip()
-            elif line.lower().startswith("contexto:"):
-                tpl["saida"]["contexto"] = line.split(":",1)[1].strip()
-            elif line.lower().startswith("explicação:"):
-                tpl["saida"]["explicacao"] = line.split(":",1)[1].strip()
-            elif line.lower().startswith("imersão:"):
-                tpl["saida"]["imersao"] = line.split(":",1)[1].strip()
+        # Detalhes de entrada
+        if section == "entrada":
+            if m := re.match(r'^[Tt]exto:\s*(.+)', line):
+                tpl["entrada"]["texto"] = m.group(1).strip()
+            elif m := re.match(r'^[Cc]ontexto:\s*(.+)', line):
+                tpl["entrada"]["contexto"] = m.group(1).strip()
+            elif m := re.match(r'^[Pp]ensamento\s+[Ii]nterno:\s*(.+)', line):
+                tpl["entrada"]["pensamento_interno"] = m.group(1).strip()
+            continue
+
+        # Textos de saída numerados
+        if section == "saida_textos":
+            if m := re.match(r'^\d+\.\s*(.+)', line):
+                tpl["saida"]["textos"].append(m.group(1).strip())
+                continue
+            section = "saida_meta"
+
+        # Meta-saída
+        if section == "saida_meta":
+            if m := re.match(r'^[Cc]ontexto:\s*(.+)', line):
+                tpl["saida"]["contexto"] = m.group(1).strip()
+            elif m := re.match(r'^[Ee]xplica[cç][ãa]o:\s*(.+)', line):
+                tpl["saida"]["explicacao"] = m.group(1).strip()
+            elif m := re.match(r'^[Ii]mers[ãa]o:\s*(.+)', line):
+                tpl["saida"]["imersao"] = m.group(1).strip()
+            continue
 
     if tpl["indice_mae"] is None:
         sys.exit("Erro: 'Índice mãe' não encontrado no template.")
@@ -133,7 +153,7 @@ def main():
     mom = str(tpl["indice_mae"])
     universo = base["IM"].get(mom)
 
-    # Cria IM se não existir (não sobrescrever!)
+    # Criar IM se não existir (sem sobrescrever!)
     if universo is None:
         universo = {
             "nome": tpl["nome"] or f"IM_{mom}",
@@ -145,13 +165,13 @@ def main():
 
     last = universo["ultimo_child"]
 
-    # Tokenização de subcampos de entrada
+    # Tokenização de entrada
     E    = Token(tpl["entrada"]["texto"])
     RE   = Token(tpl["entrada"]["reacao"])
     CE   = Token(tpl["entrada"]["contexto"])
     PIDE = Token(tpl["entrada"]["pensamento_interno"])[:3]
 
-    # Tokenização de subcampos de saída
+    # Tokenização de saída
     S: List[str] = []
     for t in tpl["saida"]["textos"]:
         S += Token(t)
@@ -171,19 +191,19 @@ def main():
     fim_out = out_marks[-1] if out_marks else fim_ent
 
     # Subdivide marcadores de entrada
-    idx  = 0
-    E_m   = ent_marks[idx: idx+len(E)];    idx += len(E)
-    RE_m  = ent_marks[idx: idx+len(RE)];   idx += len(RE)
-    CE_m  = ent_marks[idx: idx+len(CE)];   idx += len(CE)
-    PIDE_m= ent_marks[idx: idx+len(PIDE)]
+    idx    = 0
+    E_m    = ent_marks[idx: idx+len(E)];    idx += len(E)
+    RE_m   = ent_marks[idx: idx+len(RE)];   idx += len(RE)
+    CE_m   = ent_marks[idx: idx+len(CE)];   idx += len(CE)
+    PIDE_m = ent_marks[idx: idx+len(PIDE)]
 
     # Subdivide marcadores de saída
-    jdx  = 0
-    S_m   = out_marks[jdx: jdx+len(S)];    jdx += len(S)
-    RS_m  = out_marks[jdx: jdx+len(RS)];   jdx += len(RS)
-    CS_m  = out_marks[jdx: jdx+len(CS)];   jdx += len(CS)
-    EXDS_m= out_marks[jdx: jdx+len(EXDS)]; jdx += len(EXDS)
-    IME_m = out_marks[jdx: jdx+len(IME)]
+    jdx    = 0
+    S_m    = out_marks[jdx: jdx+len(S)];    jdx += len(S)
+    RS_m   = out_marks[jdx: jdx+len(RS)];   jdx += len(RS)
+    CS_m   = out_marks[jdx: jdx+len(CS)];   jdx += len(CS)
+    EXDS_m = out_marks[jdx: jdx+len(EXDS)]; jdx += len(EXDS)
+    IME_m  = out_marks[jdx: jdx+len(IME)]
 
     next_id = max((b["bloco_id"] for b in universo["blocos"]), default=0) + 1
 
@@ -192,13 +212,13 @@ def main():
         "entrada": {
             **tpl["entrada"],
             "tokens": {
-                "E":    E_m,
-                "RE":   RE_m,
-                "CE":   CE_m,
-                "PIDE": PIDE_m,
+                "E":     E_m,
+                "RE":    RE_m,
+                "CE":    CE_m,
+                "PIDE":  PIDE_m,
                 "TOTAL": ent_marks
             },
-            "fim": fim_ent,
+            "fim":    fim_ent,
             "alnulu": tpl["entrada"].get("alnulu", 100)
         },
         "saidas": [{
@@ -220,9 +240,9 @@ def main():
     universo["ultimo_child"] = fim_out
 
     # Atualiza cb.sdb
-    sequencia_atual = [b["bloco_id"] for b in universo["blocos"]]
+    sequencia = [b["bloco_id"] for b in universo["blocos"]]
     universo.setdefault("cb", {}).setdefault("sdb", []).append({
-        "sequencia": sequencia_atual,
+        "sequencia": sequencia,
         "VA": False
     })
 
