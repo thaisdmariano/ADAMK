@@ -5,7 +5,7 @@ import os
 import json
 import random
 import re as _re
-from typing import List, Tuple
+from typing import List, Dict, Tuple
 
 import torch
 import torch.nn as nn
@@ -19,6 +19,11 @@ from torch.utils.data import Dataset, DataLoader, Subset
 ARQUIVO_MEMORIA      = "adam_memoria.json"
 ARQUIVO_INCONSCIENTE = "inconsciente.json"
 EMBED_DIM            = 16
+HIDDEN_DIM           = 64
+PATIENCE             = 5
+BATCH_SIZE           = 8
+LR                   = 1e-3
+EPOCHS               = 50
 
 def ckpt_path(dominio: str) -> str:
     return f"insepa_{dominio}.pt"
@@ -40,7 +45,7 @@ def salvar_json(caminho: str, data: dict) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 # ────────────────────────────────────────────────────────────────────────────────
-# NORMALIZAÇÃO E PARSING DE TEXTO + REAÇÃO (ACEITA EMOJIS)
+# NORMALIZAÇÃO E PARSING
 # ────────────────────────────────────────────────────────────────────────────────
 
 def garantir_pontuacao(txt: str) -> str:
@@ -59,10 +64,6 @@ def normalize(txt: str) -> str:
     return txt
 
 def parse_text_reaction(raw: str, blocos: List[dict]) -> Tuple[str, str]:
-    """
-    Retorna (texto, reação), identificando no fim da string
-    um dos valores b['entrada']['reacao'], preservando emojis.
-    """
     s = raw.strip()
     reactions = sorted(
         {b["entrada"].get("reacao","") for b in blocos},
@@ -75,382 +76,297 @@ def parse_text_reaction(raw: str, blocos: List[dict]) -> Tuple[str, str]:
     return garantir_pontuacao(s), ""
 
 # ────────────────────────────────────────────────────────────────────────────────
-# MONTAGEM DE VETORES X (entrada) e Y (saída)
+# VOCABULÁRIOS POR CAMPO E RÓTULOS
 # ────────────────────────────────────────────────────────────────────────────────
 
-def _montar_X_do_bloco(b: dict) -> List[float]:
-    t    = b["entrada"]["tokens"]
-    vals = t.get("E", []) + t.get("RE", []) + t.get("CE", []) + t.get("PIDE", [])
-    return [float(v) for v in vals]
+def build_field_vocabs(memoria: dict, dominio: str) -> Dict[str,Dict[str,int]]:
+    blocos = memoria["IM"][dominio]["blocos"]
+    sets   = { "E": set(), "RE": set(), "CE": set(), "PIDE": set() }
+    for b in blocos:
+        t = b["entrada"]["tokens"]
+        for f in sets:
+            sets[f] |= set(t.get(f, []))
+    return {
+        f: {tok: i+1 for i, tok in enumerate(sorted(sets[f]))}
+        for f in sets
+    }
 
-def _montar_Y_da_saida(saida: dict) -> List[float]:
-    t    = saida.get("tokens", {})
-    vals = t.get("S", []) + t.get("RS", []) + t.get("CS", []) + t.get("EXDS", []) + t.get("IME", [])
-    return [float(v) for v in vals]
+def build_label_vocabs(memoria: dict, dominio: str) -> Dict[str,Dict[str,int]]:
+    blocos = memoria["IM"][dominio]["blocos"]
+    sets   = { "texto": set(), "emoji": set(), "ctx": set(),
+               "exp": set(),   "ime": set() }
+    for b in blocos:
+        for s in b.get("saidas", []):
+            for v in s.get("textos", []):
+                sets["texto"].add(normalize(v))
+            emo = s.get("reacao","")
+            if emo:   sets["emoji"].add(emo)
+            ctx = s.get("contexto","")
+            if ctx:   sets["ctx"].add(normalize(ctx))
+            exp = s.get("explicacao","")
+            if exp:   sets["exp"].add(normalize(exp))
+            ime = s.get("imersao","")
+            if ime:   sets["ime"].add(normalize(ime))
+    return {
+        f: {tok: i for i, tok in enumerate(sorted(sets[f]))}
+        for f in sets
+    }
 
 # ────────────────────────────────────────────────────────────────────────────────
-# DATASETS
+# DATASET MULTI-FIELD COM VALOR, MÃE E POSIÇÃO
 # ────────────────────────────────────────────────────────────────────────────────
 
-class InsepaXY(Dataset):
+class InsepaFieldDataset(Dataset):
     def __init__(self, memoria: dict, dominio: str):
+        fv = build_field_vocabs(memoria, dominio)
+        lv = build_label_vocabs(memoria, dominio)
+        self.v_E, self.v_RE, self.v_CE, self.v_PIDE = \
+            fv["E"], fv["RE"], fv["CE"], fv["PIDE"]
+        self.l_txt, self.l_emo, self.l_ctx, self.l_exp, self.l_ime = \
+            lv["texto"], lv["emoji"], lv["ctx"], lv["exp"], lv["ime"]
+
         blocos = memoria["IM"][dominio]["blocos"]
-        self.pares = []
+        self.max_E    = max(len(b["entrada"]["tokens"].get("E",[]))    for b in blocos)
+        self.max_RE   = max(len(b["entrada"]["tokens"].get("RE",[]))   for b in blocos)
+        self.max_CE   = max(len(b["entrada"]["tokens"].get("CE",[]))   for b in blocos)
+        self.max_PIDE = max(len(b["entrada"]["tokens"].get("PIDE",[])) for b in blocos)
+        self.max_pos  = max(self.max_E, self.max_RE, self.max_CE, self.max_PIDE)
+
+        # calcula mom_size = maior mãe + 1
+        max_mom = 0
         for b in blocos:
-            X = _montar_X_do_bloco(b)
-            saidas = b.get("saidas") or [b.get("saida")]
-            for s in filter(None, saidas):
-                Y = _montar_Y_da_saida(s)
-                self.pares.append((X, Y))
-        if not self.pares:
-            raise ValueError("Nenhum par (X,Y) encontrado.")
-        self.max_x = max(len(x) for x,_ in self.pares)
-        self.max_y = max(len(y) for _,y in self.pares)
+            for tok in b["entrada"]["tokens"].get("TOTAL", []):
+                m = int(tok.split(".",1)[0])
+                if m > max_mom: max_mom = m
+        self.mom_size = max_mom + 1
+
+        self.pares: List[Tuple[Dict, Dict]] = []
+        for b in blocos:
+            E_ids    = [self.v_E[t]    for t in b["entrada"]["tokens"].get("E", [])]
+            RE_ids   = [self.v_RE[t]   for t in b["entrada"]["tokens"].get("RE",[])]
+            CE_ids   = [self.v_CE[t]   for t in b["entrada"]["tokens"].get("CE",[])]
+            PIDE_ids = [self.v_PIDE[t] for t in b["entrada"]["tokens"].get("PIDE",[])]
+            E_ids    += [0]*(self.max_E    - len(E_ids))
+            RE_ids   += [0]*(self.max_RE   - len(RE_ids))
+            CE_ids   += [0]*(self.max_CE   - len(CE_ids))
+            PIDE_ids += [0]*(self.max_PIDE - len(PIDE_ids))
+
+            # função para gerar valores, mães e posições
+            def build_feats(lst, maxlen):
+                vals = [float(tok) for tok in lst]
+                moms = [int(tok.split(".",1)[0]) for tok in lst]
+                pos  = list(range(len(lst)))
+                pad = maxlen - len(lst)
+                vals += [0.0]*pad
+                moms += [0]*pad
+                pos  += [0]*pad
+                return vals, moms, pos
+
+            E_vals, E_moms, E_pos     = build_feats(b["entrada"]["tokens"].get("E",[]),    self.max_E)
+            RE_vals, RE_moms, RE_pos  = build_feats(b["entrada"]["tokens"].get("RE",[]),   self.max_RE)
+            CE_vals, CE_moms, CE_pos  = build_feats(b["entrada"]["tokens"].get("CE",[]),   self.max_CE)
+            PI_vals, PI_moms, PI_pos  = build_feats(b["entrada"]["tokens"].get("PIDE",[]), self.max_PIDE)
+
+            for s in b.get("saidas", []):
+                y = {
+                    "texto": self.l_txt[normalize(s["textos"][0])],
+                    "emoji": self.l_emo.get(s.get("reacao",""), 0),
+                    "ctx":   self.l_ctx.get(normalize(s.get("contexto","")), 0),
+                    "exp":   self.l_exp.get(normalize(s.get("explicacao","")), 0),
+                    "ime":   self.l_ime.get(normalize(s.get("imersao","")), 0),
+                }
+                x = {
+                    "E":      E_ids,    "E_val":  E_vals,  "E_mom":  E_moms,  "E_pos":  E_pos,
+                    "RE":     RE_ids,   "RE_val": RE_vals, "RE_mom": RE_moms, "RE_pos": RE_pos,
+                    "CE":     CE_ids,   "CE_val": CE_vals, "CE_mom": CE_moms, "CE_pos": CE_pos,
+                    "PIDE":   PIDE_ids, "PIDE_val":PI_vals, "PIDE_mom":PI_moms, "PIDE_pos":PI_pos,
+                }
+                self.pares.append((x, y))
 
     def __len__(self) -> int:
         return len(self.pares)
 
     def __getitem__(self, idx: int):
-        x, y    = self.pares[idx]
-        x_pad   = x + [0.0] * (self.max_x - len(x))
-        y_pad   = y + [0.0] * (self.max_y - len(y))
-        return torch.tensor(x_pad, dtype=torch.float32), torch.tensor(y_pad, dtype=torch.float32)
+        x, y = self.pares[idx]
+        x_t = {
+            "E":      torch.tensor(x["E"],      dtype=torch.long),
+            "E_val":  torch.tensor(x["E_val"],  dtype=torch.float32),
+            "E_mom":  torch.tensor(x["E_mom"],  dtype=torch.long),
+            "E_pos":  torch.tensor(x["E_pos"],  dtype=torch.long),
 
-class TestXY(Dataset):
-    def __init__(self, memoria: dict, dominio: str):
-        blocos = memoria["IM"][dominio]["blocos"]
-        if not blocos:
-            raise ValueError("Nenhum bloco para teste.")
-        self.Xs = [_montar_X_do_bloco(b) for b in blocos]
-        _, max_x, _ = torch.load(ckpt_path(dominio))
-        self.max_x = max_x
-        self.ids   = [b["bloco_id"] for b in blocos]
+            "RE":     torch.tensor(x["RE"],     dtype=torch.long),
+            "RE_val": torch.tensor(x["RE_val"], dtype=torch.float32),
+            "RE_mom": torch.tensor(x["RE_mom"], dtype=torch.long),
+            "RE_pos": torch.tensor(x["RE_pos"], dtype=torch.long),
 
-    def __len__(self) -> int:
-        return len(self.Xs)
+            "CE":     torch.tensor(x["CE"],     dtype=torch.long),
+            "CE_val": torch.tensor(x["CE_val"], dtype=torch.float32),
+            "CE_mom": torch.tensor(x["CE_mom"], dtype=torch.long),
+            "CE_pos": torch.tensor(x["CE_pos"], dtype=torch.long),
 
-    def __getitem__(self, idx: int):
-        x     = self.Xs[idx]
-        x_pad = x + [0.0] * (self.max_x - len(x))
-        return torch.tensor(x_pad, dtype=torch.float32), self.ids[idx]
+            "PIDE":     torch.tensor(x["PIDE"],     dtype=torch.long),
+            "PIDE_val": torch.tensor(x["PIDE_val"], dtype=torch.float32),
+            "PIDE_mom": torch.tensor(x["PIDE_mom"], dtype=torch.long),
+            "PIDE_pos": torch.tensor(x["PIDE_pos"], dtype=torch.long),
+        }
+        y_t = {
+            "texto": torch.tensor(y["texto"], dtype=torch.long),
+            "emoji": torch.tensor(y["emoji"], dtype=torch.long),
+            "ctx":   torch.tensor(y["ctx"],   dtype=torch.long),
+            "exp":   torch.tensor(y["exp"],   dtype=torch.long),
+            "ime":   torch.tensor(y["ime"],   dtype=torch.long),
+        }
+        return x_t, y_t
 
 # ────────────────────────────────────────────────────────────────────────────────
-# MODELO COM EMBEDDING INSEPA
+# MODELO MULTI‐HEAD COM CATEGORIA, VALOR, MÃE E POSIÇÃO
 # ────────────────────────────────────────────────────────────────────────────────
 
-class EmbeddingINSEPA(nn.Module):
-    def __init__(self, input_dim: int, embedding_dim: int = EMBED_DIM):
+class AdamSegmentado(nn.Module):
+    def __init__(self,
+                 nE:int, nRE:int, nCE:int, nPIDE:int,
+                 mom_size:int, max_pos:int,
+                 n_txt:int, n_emo:int, n_ctx:int, n_exp:int, n_ime:int):
         super().__init__()
-        self.layer = nn.Sequential(
-            nn.Linear(input_dim, embedding_dim),
-            nn.Tanh()
-        )
+        # Embeddings por campo
+        # E
+        self.em_E      = nn.Embedding(nE+1,    EMBED_DIM, padding_idx=0)
+        self.proj_Eval = nn.Linear(1, EMBED_DIM, bias=False)
+        self.em_Emom   = nn.Embedding(mom_size, EMBED_DIM, padding_idx=0)
+        self.em_Epos   = nn.Embedding(max_pos,  EMBED_DIM, padding_idx=0)
+        # RE
+        self.em_RE      = nn.Embedding(nRE+1,    EMBED_DIM, padding_idx=0)
+        self.proj_REval = nn.Linear(1, EMBED_DIM, bias=False)
+        self.em_REmom   = nn.Embedding(mom_size, EMBED_DIM, padding_idx=0)
+        self.em_REpos   = nn.Embedding(max_pos,  EMBED_DIM, padding_idx=0)
+        # CE
+        self.em_CE      = nn.Embedding(nCE+1,    EMBED_DIM, padding_idx=0)
+        self.proj_CEval = nn.Linear(1, EMBED_DIM, bias=False)
+        self.em_CEmom   = nn.Embedding(mom_size, EMBED_DIM, padding_idx=0)
+        self.em_CEpos   = nn.Embedding(max_pos,  EMBED_DIM, padding_idx=0)
+        # PIDE
+        self.em_PIDE      = nn.Embedding(nPIDE+1,    EMBED_DIM, padding_idx=0)
+        self.proj_PIDEval = nn.Linear(1, EMBED_DIM, bias=False)
+        self.em_PIDEmom   = nn.Embedding(mom_size,    EMBED_DIM, padding_idx=0)
+        self.em_PIDEpos   = nn.Embedding(max_pos,     EMBED_DIM, padding_idx=0)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.layer(x)
+        total = EMBED_DIM * 4
+        self.fc1 = nn.Linear(total, HIDDEN_DIM)
+        self.act = nn.ReLU()
 
-class InsepaReg(nn.Module):
-    def __init__(self, xin: int, yout: int, hidden: int = 32, emb_dim: int = EMBED_DIM):
-        super().__init__()
-        self.embed = EmbeddingINSEPA(xin, emb_dim)
-        self.net   = nn.Sequential(
-            nn.Linear(emb_dim, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, yout)
-        )
+        # Cabeças de saída
+        self.h_txt = nn.Linear(HIDDEN_DIM, n_txt)
+        self.h_emo = nn.Linear(HIDDEN_DIM, n_emo)
+        self.h_ctx = nn.Linear(HIDDEN_DIM, n_ctx)
+        self.h_exp = nn.Linear(HIDDEN_DIM, n_exp)
+        self.h_ime = nn.Linear(HIDDEN_DIM, n_ime)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(self.embed(x))
+    def forward(self, x: Dict[str,torch.Tensor]) -> Dict[str,torch.Tensor]:
+        # Campo E
+        eE_tok  = self.em_E(x["E"])
+        eE_val  = self.proj_Eval(x["E_val"].unsqueeze(-1))
+        eE_mom  = self.em_Emom(x["E_mom"])
+        eE_pos  = self.em_Epos(x["E_pos"])
+        eE      = (eE_tok + eE_val + eE_mom + eE_pos).mean(dim=1)
+        # Campo RE
+        eRE_tok = self.em_RE(x["RE"])
+        eRE_val = self.proj_REval(x["RE_val"].unsqueeze(-1))
+        eRE_mom = self.em_REmom(x["RE_mom"])
+        eRE_pos = self.em_REpos(x["RE_pos"])
+        eRE      = (eRE_tok + eRE_val + eRE_mom + eRE_pos).mean(dim=1)
+        # Campo CE
+        eCE_tok = self.em_CE(x["CE"])
+        eCE_val = self.proj_CEval(x["CE_val"].unsqueeze(-1))
+        eCE_mom = self.em_CEmom(x["CE_mom"])
+        eCE_pos = self.em_CEpos(x["CE_pos"])
+        eCE      = (eCE_tok + eCE_val + eCE_mom + eCE_pos).mean(dim=1)
+        # Campo PIDE
+        ePI_tok = self.em_PIDE(x["PIDE"])
+        ePI_val = self.proj_PIDEval(x["PIDE_val"].unsqueeze(-1))
+        ePI_mom = self.em_PIDEmom(x["PIDE_mom"])
+        ePI_pos = self.em_PIDEpos(x["PIDE_pos"])
+        ePIDE    = (ePI_tok + ePI_val + ePI_mom + ePI_pos).mean(dim=1)
+
+        # Agrega e classifica
+        h = torch.cat([eE, eRE, eCE, ePIDE], dim=1)
+        h = self.act(self.fc1(h))
+        return {
+            "texto": self.h_txt(h),
+            "emoji": self.h_emo(h),
+            "ctx":   self.h_ctx(h),
+            "exp":   self.h_exp(h),
+            "ime":   self.h_ime(h),
+        }
 
 # ────────────────────────────────────────────────────────────────────────────────
-# TREINO COM EARLY STOPPING
+# TREINO COM CrossEntropyLoss E EARLY STOPPING
 # ────────────────────────────────────────────────────────────────────────────────
 
-def train(memoria: dict, dominio: str, patience: int = 5) -> None:
-    torch.manual_seed(42)
-    ds     = InsepaXY(memoria, dominio)
-    n      = len(ds)
-    ckpt   = ckpt_path(dominio)
-    loss_fn = nn.MSELoss()
+def train(memoria: dict, dominio: str) -> None:
+    ds = InsepaFieldDataset(memoria, dominio)
+    n  = len(ds)
+    ckpt = ckpt_path(dominio)
 
-    # Se poucos dados, treino simples
-    if n < 2:
-        loader    = DataLoader(ds, batch_size=1, shuffle=True)
-        model     = InsepaReg(ds.max_x, ds.max_y)
-        optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
-        print(f"⚠️ Apenas {n} amostra — sem validação.")
-        for ep in range(1, 101):
-            total = 0.0
-            model.train()
-            for X, Y in loader:
-                optimizer.zero_grad()
-                loss_fn(model(X), Y).backward()
-                optimizer.step()
-                total += loss_fn(model(X), Y).item()
-            if ep % 10 == 0:
-                print(f" Ep{ep:03d}/100  loss={total/len(loader):.4f}")
-        torch.save((model.state_dict(), ds.max_x, ds.max_y), ckpt)
-        print("✅ Treino concluído.")
-        return
-
-    # Split 80/20
-    idxs       = list(range(n))
+    idxs = list(range(n))
     random.shuffle(idxs)
-    val_size   = max(1, int(0.2 * n))
-    val_idx    = idxs[:val_size]
-    train_idx  = idxs[val_size:]
+    vsz = max(1, int(0.2 * n))
+    vidx, tidx = idxs[:vsz], idxs[vsz:]
+    train_ld = DataLoader(Subset(ds, tidx), batch_size=BATCH_SIZE, shuffle=True)
+    val_ld   = DataLoader(Subset(ds, vidx), batch_size=BATCH_SIZE)
 
-    train_loader = DataLoader(Subset(ds, train_idx), batch_size=4, shuffle=True)
-    val_loader   = DataLoader(Subset(ds, val_idx),   batch_size=4)
+    model = AdamSegmentado(
+        nE=len(ds.v_E), nRE=len(ds.v_RE),
+        nCE=len(ds.v_CE), nPIDE=len(ds.v_PIDE),
+        mom_size=ds.mom_size, max_pos=ds.max_pos,
+        n_txt=len(ds.l_txt), n_emo=len(ds.l_emo),
+        n_ctx=len(ds.l_ctx), n_exp=len(ds.l_exp), n_ime=len(ds.l_ime)
+    )
+    opt = optim.Adam(model.parameters(), lr=LR)
+    ce  = nn.CrossEntropyLoss()
 
-    model     = InsepaReg(ds.max_x, ds.max_y)
-    optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
-
-    lr = optimizer.param_groups[0]['lr']
-    print(f"🚀 Treinando domínio {dominio} — lr={lr:.0e} — {len(train_idx)} train / {len(val_idx)} val")
-
-    best_val, wait, prev_val = float("inf"), 0, None
-    for ep in range(1, 101):
+    best, wait, prev_val = float("inf"), 0, None
+    for ep in range(1, EPOCHS+1):
         model.train()
-        for X, Y in train_loader:
-            optimizer.zero_grad()
-            loss_fn(model(X), Y).backward()
-            optimizer.step()
+        for x, y in train_ld:
+            opt.zero_grad()
+            out = model(x)
+            loss = (
+                ce(out["texto"], y["texto"]) +
+                ce(out["emoji"], y["emoji"]) +
+                ce(out["ctx"],   y["ctx"]) +
+                ce(out["exp"],   y["exp"]) +
+                ce(out["ime"],   y["ime"])
+            )
+            loss.backward()
+            opt.step()
 
         model.eval()
-        total_val = 0.0
+        val_loss = 0.0
         with torch.no_grad():
-            for X, Y in val_loader:
-                total_val += loss_fn(model(X), Y).item()
+            for x, y in val_ld:
+                out = model(x)
+                val_loss += (
+                    ce(out["texto"], y["texto"]).item() +
+                    ce(out["emoji"], y["emoji"]).item() +
+                    ce(out["ctx"],   y["ctx"]).item() +
+                    ce(out["exp"],   y["exp"]).item() +
+                    ce(out["ime"],   y["ime"]).item()
+                )
+        val_loss /= len(val_ld)
 
-        val_loss = total_val / len(val_loader)
-        rmse     = val_loss ** 0.5
-
-        if prev_val is None:
-            delta, rel, status = 0.0, 0.0, "— início —"
-        else:
-            delta = prev_val - val_loss
-            rel   = delta / prev_val if prev_val > 0 else 0.0
-            if rel >= 0.05:
-                status = "🔥 Alta taxa de aprendizado!"
-            elif rel >= 0.01:
-                status = "👍 Boa taxa de aprendizado"
-            elif rel > 0:
-                status = "⚠️ Baixa taxa de aprendizado"
-            else:
-                status = "❌ Perda aumentou!"
-
-        print(
-            f" Ep{ep:03d} val_loss={val_loss:.4f} rmse={rmse:.4f} "
-            f"Δloss={delta:.4f} ({rel*100:.1f}%) {status}"
-        )
-        prev_val = val_loss
-
-        if val_loss < best_val:
-            best_val = val_loss
-            wait     = 0
-            torch.save((model.state_dict(), ds.max_x, ds.max_y), ckpt)
+        if prev_val is None or val_loss < best:
+            best, wait = val_loss, 0
+            torch.save((
+                model.state_dict(),
+                ds.max_E, ds.max_RE, ds.max_CE, ds.max_PIDE,
+                ds.mom_size, ds.max_pos,
+                ds.v_E, ds.v_RE, ds.v_CE, ds.v_PIDE,
+                ds.l_txt, ds.l_emo, ds.l_ctx, ds.l_exp, ds.l_ime
+            ), ckpt)
         else:
             wait += 1
-            if wait >= patience:
-                print(f"⏹️ Early stopping (patience={patience})")
+            if wait >= PATIENCE:
                 break
+        prev_val = val_loss
 
-    print(f"✅ Treino concluído. best_val_loss={best_val:.4f}")
-
-# ────────────────────────────────────────────────────────────────────────────────
-# INFERÊNCIA INTERATIVA COM BUG-FIX DE NOVA ENTRADA
-# ────────────────────────────────────────────────────────────────────────────────
-
-def infer(memoria: dict, dominio: str) -> None:
-    ckpt = ckpt_path(dominio)
-    if not os.path.exists(ckpt):
-        print("⚠️ Sem checkpoint — treinando primeiro.")
-        train(memoria, dominio)
-
-    state, max_x, max_y = torch.load(ckpt)
-    model = InsepaReg(max_x, max_y)
-    model.load_state_dict(state)
-    model.eval()
-
-    blocos = memoria["IM"][dominio]["blocos"]
-    prompt_base = "(Enter ↩ próxima | 'insight' | 'roleplay' | 'novo' | 'sair') ► "
-
-    raw = None
-    while True:
-        # se raw for None, pedimos nova entrada+reação
-        if raw is None:
-            raw = input("Entrada+Reação ► ").strip()
-
-        cmd = raw.lower()
-        if cmd == "sair":
-            print("👋 Até mais!"); return
-
-        if cmd == "roleplay":
-            bloco = random.choice(blocos)
-        else:
-            txt, reac = parse_text_reaction(raw, blocos)
-            bloco = next((
-                b for b in blocos
-                if normalize(b["entrada"]["texto"]) == normalize(txt)
-                and b["entrada"].get("reacao","") == reac
-            ), None)
-            if not bloco:
-                print("❌ Entrada+reação não cadastrada.")
-                raw = None
-                continue
-
-        # predição e escolha da melhor saída
-        X     = _montar_X_do_bloco(bloco)
-        Xp    = X + [0.0] * (max_x - len(X))
-        with torch.no_grad():
-            y_hat = model(torch.tensor([Xp], dtype=torch.float32))[0].tolist()
-
-        saidas = bloco.get("saidas") or [bloco.get("saida")]
-        saidas = [s for s in saidas if s]
-        dists = []
-        for s in saidas:
-            Y   = _montar_Y_da_saida(s)
-            Yp  = Y + [0.0] * (max_y - len(Y))
-            dists.append(sum((yh - yr)**2 for yh,yr in zip(y_hat, Yp)))
-        best_idx = min(range(len(dists)), key=lambda i: dists[i])
-        saida    = saidas[best_idx]
-
-        # prepara variações
-        vars_txt = saida.get("textos") or [saida.get("texto","")]
-        ctx      = saida.get("contexto","").strip()
-        if ctx:
-            vars_txt = [v for v in vars_txt if normalize(v) != normalize(ctx)]
-        reac_s   = saida.get("reacao","").strip()
-        if reac_s:
-            vars_txt = [f"{v} {reac_s}" for v in vars_txt]
-
-        idx = 0
-        print(f"\n🤖 {vars_txt[idx]}")
-
-        last_bloco = bloco
-        last_saida = saida
-
-        # loop pós-resposta: comandos ou nova entrada
-        while True:
-            sub = input(prompt_base).strip()
-
-            # variação de resposta
-            if sub == "":
-                idx = (idx + 1) % len(vars_txt)
-                print(f"\n🤖 {vars_txt[idx]}")
-                continue
-
-            sb = sub.lower()
-            if sb == "sair":
-                print("👋 Até mais!"); return
-            if sb == "novo":
-                raw = None
-                break
-            if sb == "roleplay":
-                raw = "roleplay"
-                break
-            if sb == "insight":
-                explic = last_saida.get("explicacao","").strip()
-                if explic:
-                    print(f"\n💡 Insight:\n  {explic}")
-                else:
-                    ent = last_bloco["entrada"]
-                    txt = ent.get("texto","").strip()
-                    re  = ent.get("reacao","").strip()
-                    cx  = ent.get("contexto","").strip()
-                    auto = (
-                        f"Devido à expressão \"{txt}\", "
-                        f"a reação emocional \"{re}\" "
-                        f"e a breve noção do assunto \"{cx}\", "
-                        f"concluo que esta é a melhor resposta."
-                    )
-                    print(f"\n💡 Insight:\n  {auto}")
-                continue
-
-            # QUALQUER OUTRA STRING → nova entrada+reação
-            raw = sub
-            break
-
-        # volta ao loop externo com raw definido ou None
-        continue
-
-# ────────────────────────────────────────────────────────────────────────────────
-# TESTE EM LOTE
-# ────────────────────────────────────────────────────────────────────────────────
-
-def test_model(memoria: dict, dominio: str) -> None:
-    ckpt = ckpt_path(dominio)
-    if not os.path.exists(ckpt):
-        print("⚠️ Sem checkpoint — treine antes."); return
-
-    state, max_x, max_y = torch.load(ckpt)
-    model = InsepaReg(max_x, max_y)
-    model.load_state_dict(state)
-    model.eval()
-
-    blocos = memoria["IM"][dominio]["blocos"]
-    print(f"📊 Teste em lote — Domínio {dominio} ({len(blocos)} blocos)")
-    for b in blocos:
-        X   = _montar_X_do_bloco(b)
-        Xp  = torch.tensor([X + [0.0]*(max_x - len(X))], dtype=torch.float32)
-        y_h = model(Xp)[0].detach().tolist()
-        print(f"\n❏ Bloco_id={b['bloco_id']} Entrada: {b['entrada']['texto']} {b['entrada']['reacao']}")
-        print(f"   Y_pred: {y_h}")
-
-# ────────────────────────────────────────────────────────────────────────────────
-# CLI PRINCIPAL
-# ────────────────────────────────────────────────────────────────────────────────
-
-def menu_principal() -> str:
-    print("\n=== Menu Principal ===")
-    print("1) Treinar rede neural")
-    print("2) Inferir com rede neural")
-    print("3) Testar em lote")
-    print("4) Sair do programa")
-    return input("Escolha uma opção (1/2/3/4): ").strip()
-
-def prompt_dominio(action: str) -> str:
-    return input(f"→ Índice-mãe p/ {action} (ou 'sair' p/ voltar): ").strip()
-
-def main():
-    memoria      = carregar_json(ARQUIVO_MEMORIA,      {"IM": {}})
-    inconsciente = carregar_json(ARQUIVO_INCONSCIENTE, {"conteudos": []})
-
-    while True:
-        opc = menu_principal()
-        if opc == "1":
-            dom = prompt_dominio("treinar")
-            if dom.lower() == "sair":
-                continue
-            if dom in memoria["IM"]:
-                print(f"\n🚀 Treinando domínio {dom}...")
-                train(memoria, dom)
-            else:
-                print(f"❌ Domínio '{dom}' não encontrado.")
-
-        elif opc == "2":
-            dom = prompt_dominio("inferir")
-            if dom.lower() == "sair":
-                continue
-            if dom in memoria["IM"]:
-                infer(memoria, dom)
-            else:
-                print(f"❌ Domínio '{dom}' não encontrado.")
-
-        elif opc == "3":
-            dom = prompt_dominio("testar")
-            if dom.lower() == "sair":
-                continue
-            if dom in memoria["IM"]:
-                test_model(memoria, dom)
-            else:
-                print(f"❌ Domínio '{dom}' não encontrado.")
-
-        elif opc == "4":
-            print("👋 Até mais!"); break
-        else:
-            print("❌ Opção inválida. Digite 1, 2, 3 ou 4.")
-
-if __name__ == "__main__":
-    main()
+    print(f"✅ Treino concluído. best_val_loss={best:.4f}")
