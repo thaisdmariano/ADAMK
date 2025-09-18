@@ -1,25 +1,41 @@
 #!/usr/bin/env python3
 # coding: utf-8
-r"""
-insepa_update.py — CLI em português para INSEPA com:
-  • CRUD de Universos (criar, renomear, excluir)
-  • CRUD de Blocos (listar, criar/atualizar, excluir)
-  • Criação em lote de blocos pelo cabeçalho “Bloco:” ou “🧱”
-  • Geração de tokens na ordem EXDS → IME → S → RS → CS
+"""
+insepa_update.py — CLI para INSEPA com JSON no molde pedido
+
+• inconsciente.json (IDA) → cada IM tem "nome" e lista de "blocos"
+  – fases com marcadores; vars só em E, RE, EXDS, IME, S (default ["0.0"])
+  – PIDE, EXDS, IME são segmentos completos (até 3 itens)
+  – Sentimento/Tendência da Entrada e Saída = "Neutro"/"0.0"
+  – não calcula alnulu aqui
+• adam_memoria.json (UM) → cada UM tem "Universo Mãe", "blocos" com alnulu e "cb"
 """
 
-import sys
-import json
-import re
-from typing import List, Dict, Any, Optional
+import sys, json, re
+from typing import List, Dict, Any, Optional, Tuple
+
+JSON_IDA = "inconsciente.json"
+JSON_UM  = "adam_memoria.json"
+
+def load_json(path: str) -> Dict[str,Any]:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        sys.exit(f"Erro ao ler {path}: {e}")
+
+def save_json(obj: Dict[str,Any], path: str) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
 
 def Token(text: str) -> List[str]:
-    return re.findall(r'\w+|[^\w\s]', text, re.UNICODE)
+    clean = text.replace('"', '')
+    return re.findall(r'\w+|[^\w\s]', clean, re.UNICODE)
 
 def next_marker(prev: str) -> str:
     mom, _, suf = prev.partition('.')
-    if not mom.isdigit():
-        raise ValueError(f"Marcador inválido: {prev!r}")
     return f"{mom}.{int(suf or '0') + 1}"
 
 def generate_markers(start: str, count: int) -> List[str]:
@@ -29,6 +45,9 @@ def generate_markers(start: str, count: int) -> List[str]:
         seq.append(cur)
     return seq
 
+# —————————————————————————————————————————————————————————————
+# cálculo de alnulu exato conforme mapa/equiv fornecido
+# —————————————————————————————————————————————————————————————
 def calcular_alnulu(texto: str) -> int:
     mapa = {
         'A':1,'B':2,'C':3,'D':4,'E':5,'F':6,'G':7,'H':8,'I':9,
@@ -48,350 +67,297 @@ def calcular_alnulu(texto: str) -> int:
     }
     total = 0
     for ch in texto:
-        up = ch.upper()
+        up   = ch.upper()
         norm = equiv.get(up, up)
         total += mapa.get(norm, 0)
     return total
 
-def parse_block(lines: List[str]) -> Dict[str, Any]:
+# —————————————————————————————————————————————————————————————
+# parse_block corrigido para não falhar em None e tratar explicação/imersão
+# —————————————————————————————————————————————————————————————
+def parse_block(lines: List[str]) -> Dict[str,Any]:
     tpl = {
         "bloco_id": None,
-        "entrada": {"texto":"", "reacao":"", "contexto":"", "pensamento_interno":""},
-        "saida":   {"textos":[], "reacao":"", "contexto":"", "explicacao":"", "imersao":""}
+        "entrada": {"texto":"","reacao":"","contexto":"","pensamento_interno":[]},
+        "saida":   {"textos":[],"explicacao":[],"imersao":[],"reacao":"","contexto":""}
     }
-    # quebra linhas que tiveram vários campos na mesma linha
-    expanded: List[str] = []
-    for raw in lines:
-        tmp = re.sub(
-            r'(Bloco:|🧱|Entrada:|Reação:|Contexto:|Pensamento Interno:|Explicação:|Imersão:|Saída:|\d+\.)',
-            r'\n\1',
-            raw
-        )
-        expanded += [l.strip() for l in tmp.split('\n') if l.strip()]
 
     section: Optional[str] = None
-    for line in expanded:
-        if re.match(r'^(?:Bloco:|🧱)\s*$', line):
-            continue
-        if m := re.match(r'^[Ee]xplica[cç][ãa]o:\s*(.+)', line):
-            tpl["saida"]["explicacao"] = m.group(1).strip(); continue
-        if m := re.match(r'^[Ii]mers[ãa]o:\s*(.+)', line):
-            tpl["saida"]["imersao"] = m.group(1).strip(); continue
-        if m := re.match(r'^Entrada:\s*(.+)', line):
-            tpl["entrada"]["texto"] = m.group(1).strip(); section = "entrada"; continue
-        if section == "entrada" and (m := re.match(r'^[Rr]eação:\s*(.+)', line)):
-            tpl["entrada"]["reacao"] = m.group(1).strip(); continue
-        if section == "entrada" and (m := re.match(r'^[Cc]ontexto:\s*(.+)', line)):
-            tpl["entrada"]["contexto"] = m.group(1).strip(); continue
-        if m := re.match(r'^[Pp]ensamento\s+[Ii]nterno:\s*(.+)', line):
-            tpl["entrada"]["pensamento_interno"] = m.group(1).strip(); continue
-        if re.match(r'^Saída:\s*$', line):
-            section = "saida_textos"; continue
-        if section == "saida_textos" and (m := re.match(r'^\d+\.\s*(.+)', line)):
-            tpl["saida"]["textos"].append(m.group(1).strip()); continue
-        if section == "saida_textos" and re.match(r'^[Rr]eação:', line):
-            section = "saida_meta"
-        if section == "saida_meta" and (m := re.match(r'^[Rr]eação:\s*(.+)', line)):
-            tpl["saida"]["reacao"] = m.group(1).strip(); continue
-        if section == "saida_meta" and (m := re.match(r'^[Cc]ontexto:\s*(.+)', line)):
-            tpl["saida"]["contexto"] = m.group(1).strip(); continue
+    for raw in lines:
+        line = raw.strip()
+
+        # Entrada
+        if line.lower().startswith("entrada:"):
+            tpl["entrada"]["texto"] = line.partition(":")[2].strip()
+            section = "ent"; continue
+
+        if section=="ent" and line.lower().startswith("reação:"):
+            tpl["entrada"]["reacao"] = line.partition(":")[2].strip(); continue
+
+        if section=="ent" and line.lower().startswith("contexto:"):
+            tpl["entrada"]["contexto"] = line.partition(":")[2].strip(); continue
+
+        if section=="ent" and line.lower().startswith("pensamento interno:"):
+            tpl["entrada"]["pensamento_interno"].append(line.partition(":")[2].strip()); continue
+
+        # Saída
+        if line.lower() == "saída:":
+            section = "out_txt"; continue
+
+        if section=="out_txt" and re.match(r'^\d+\.\s+', line):
+            tpl["saida"]["textos"].append(line.partition(" ")[2].strip()); continue
+
+        if line.lower().startswith("explicação:"):
+            tpl["saida"]["explicacao"].append(line.partition(":")[2].strip()); continue
+
+        if line.lower().startswith("imersão:"):
+            tpl["saida"]["imersao"].append(line.partition(":")[2].strip()); continue
+
+        if section in ("out_txt","out_meta") and line.lower().startswith("reação:"):
+            tpl["saida"]["reacao"] = line.partition(":")[2].strip()
+            section = "out_meta"; continue
+
+        if section=="out_meta" and line.lower().startswith("contexto:"):
+            tpl["saida"]["contexto"] = line.partition(":")[2].strip(); continue
 
     if not tpl["entrada"]["texto"]:
-        sys.exit("Erro: cada bloco deve ter ao menos 'Entrada'.")
+        sys.exit("Erro: cada bloco precisa de 'Entrada'.")
     return tpl
 
-def save_json(base: Dict[str, Any], path: str="adam_memoria.json") -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(base, f, ensure_ascii=False, indent=2)
+# —————————————————————————————————————————————————————————————
+# build_ida_block: tokeniza e monta bloco para IDA (sem alnulu)
+# —————————————————————————————————————————————————————————————
+def build_ida_block(
+    tpl: Dict[str,Any],
+    last_marker: str
+) -> Tuple[Dict[str,Any], str, str]:
+    # tokenização básica
+    E  = Token(tpl["entrada"]["texto"])
+    RE = Token(tpl["entrada"]["reacao"])
+    CE = Token(tpl["entrada"]["contexto"])
+    SI = tpl["entrada"]["pensamento_interno"][:3]   # segmentos
+    EX = tpl["saida"]["explicacao"][:3]
+    IM = tpl["saida"]["imersao"][:3]
 
-# ——— Gerenciar Universos —————————————————————————————————
+    texts = []
+    for t in tpl["saida"]["textos"]:
+        texts += Token(t)
+    RS = Token(tpl["saida"]["reacao"])
+    CS = Token(tpl["saida"]["contexto"])
 
-def show_summary(base: Dict[str, Any]) -> None:
-    ims = base.get("IM", {})
-    if not ims:
-        print("  (nenhum universo cadastrado)")
-        return
-    for mom, uni in ims.items():
-        print(f"  IM '{mom}': nome='{uni.get('nome','')}'")
+    total = len(E)+len(RE)+len(CE)+len(SI)+len(EX)+len(IM)+len(texts)+len(RS)+len(CS)
+    marks = generate_markers(last_marker, total)
 
-def create_universe(base: Dict[str, Any]) -> None:
-    mom = input("Novo Índice Mãe: ").strip()
-    if not mom.isdigit() or mom in base.get("IM", {}):
-        print("Índice inválido ou já existe."); return
-    nome = input("Nome do Universo: ").strip()
-    if input(f"Criar IM {mom} '{nome}'? (S/N): ").lower() != "s":
-        print("Cancelado."); return
-    base["IM"][mom] = {
-        "nome": nome,
-        "ultimo_child": f"{mom}.0",
-        "blocos": [], "cb": {"status":"Indisponível","sdb":[]}
+    ptr = 0
+    Em  = marks[ptr: ptr+len(E)];    ptr+=len(E)
+    REm = marks[ptr: ptr+len(RE)];   ptr+=len(RE)
+    CEm = marks[ptr: ptr+len(CE)];   ptr+=len(CE)
+    PIm = marks[ptr: ptr+len(SI)];   ptr+=len(SI)
+    EXm = marks[ptr: ptr+len(EX)];   ptr+=len(EX)
+    IMm = marks[ptr: ptr+len(IM)];   ptr+=len(IM)
+    Sm  = marks[ptr: ptr+len(texts)]; ptr+=len(texts)
+    RSm = marks[ptr: ptr+len(RS)];    ptr+=len(RS)
+    CSm = marks[ptr: ptr+len(CS)]
+
+    fim_ent = CEm[-1] if CEm else last_marker
+    fim_out = CSm[-1] if CSm else fim_ent
+
+    def gv(phase: str, mark: str) -> List[str]:
+        return tpl.get(f"vars_{phase}", {}).get(mark, ["0.0"])
+
+    bloco = {
+        "bloco_id": tpl.get("bloco_id"),
+        "Entrada": [
+            {"E": m, "t": tok, "vars": gv("entrada", m)}
+            for m,tok in zip(Em, E)
+        ],
+        "Reação": [
+            {"RE": m, "t": tok, "vars": gv("reacao", m)}
+            for m,tok in zip(REm, RE)
+        ],
+        "Contexto": [
+            {"CE": m, "t": tok}
+            for m,tok in zip(CEm, CE)
+        ],
+        "Sentimento da Entrada": "Neutro",
+        "Tendência da Entrada": "0.0",
+        "Pensamento Interno": [
+            {"PIDE": m, "t": seg}
+            for m,seg in zip(PIm, SI)
+        ],
+        "Total de Entrada": Em + REm + CEm + PIm,
+        "Saída": {
+            "Explicação": [
+                {"EXDS": m, "t": seg}
+                for m,seg in zip(EXm, EX)
+            ],
+            "Imersão": [
+                {"IME": m, "t": seg, "vars": gv("imersao", m)}
+                for m,seg in zip(IMm, IM)
+            ],
+            "Textos": [
+                {"S": m, "t": tok, "vars": gv("textos", m)}
+                for m,tok in zip(Sm, texts)
+            ],
+            "Reação de Saída": [
+                {"RS": m, "t": tok}
+                for m,tok in zip(RSm, RS)
+            ],
+            "Contexto de Saída": [
+                {"CS": m, "t": tok}
+                for m,tok in zip(CSm, CS)
+            ],
+            "Sentimento da Saída": "Neutro",
+            "Tendência da Saída": "0.0",
+            "Ressonância": True
+        },
+        "Total de Saída": EXm + IMm + Sm + RSm + CSm
     }
-    save_json(base)
-    print(f"IM '{mom}' criado com sucesso.")
 
-def rename_universe(base: Dict[str, Any]) -> None:
-    mom = input("Índice Mãe a renomear: ").strip()
-    uni = base.get("IM", {}).get(mom)
-    if not uni:
-        print("Universo não encontrado."); return
-    novo = input(f"Novo nome para '{uni['nome']}': ").strip()
-    if input("Confirmar? (S/N): ").lower() != "s":
-        print("Cancelado."); return
-    uni["nome"] = novo
-    save_json(base)
-    print("Renomeado com sucesso.")
+    return bloco, fim_ent, fim_out
 
-def delete_universe(base: Dict[str, Any]) -> None:
-    mom = input("Índice Mãe para excluir: ").strip()
-    uni = base.get("IM", {}).get(mom)
-    if not uni:
-        print("Universo não encontrado."); return
-    if input(f"Excluir IM {mom} '{uni['nome']}'? (S/N): ").lower() != "s":
-        print("Cancelado."); return
-    del base["IM"][mom]
-    save_json(base)
-    print("Universo excluído com sucesso.")
+def process_block(idx_mae: str, tpl: Dict[str,Any]) -> None:
+    ida = load_json(JSON_IDA)
+    ims = ida.setdefault("IDA", {}).setdefault("IM", {})
+    uni = ims.setdefault(idx_mae, {"nome":"", "blocos":[]})
 
-def manage_universes(base: Dict[str, Any]) -> None:
+    um_all = load_json(JSON_UM).get("UM", {})
+    last = f"{idx_mae}.0"
+    if um_all.get(idx_mae,{}).get("blocos"):
+        last = um_all[idx_mae]["blocos"][-1]["ultimo_child_saida"]
+
+    bloco, _, _ = build_ida_block(tpl, last)
+    if bloco["bloco_id"] is None:
+        bloco["bloco_id"] = max((b["bloco_id"] for b in uni["blocos"]), default=0) + 1
+
+    for i,b in enumerate(uni["blocos"]):
+        if b["bloco_id"] == bloco["bloco_id"]:
+            uni["blocos"][i] = bloco
+            break
+    else:
+        uni["blocos"].append(bloco)
+
+    save_json(ida, JSON_IDA)
+    derive_um(idx_mae)
+
+def derive_um(idx_mae: str) -> None:
+    ida_all  = load_json(JSON_IDA)
+    uni_ida  = ida_all["IDA"]["IM"][idx_mae]
+    nome_mae = uni_ida.get("nome","")
+
+    um_all  = load_json(JSON_UM)
+    um_root = um_all.setdefault("UM", {})
+
+    blocos = []
+    for b in uni_ida["blocos"]:
+        text_ent = "".join(item["t"] for item in b["Entrada"])
+        blocos.append({
+            "bloco_id": b["bloco_id"],
+            "Total de Entrada":     b["Total de Entrada"],
+            "ultimo_child_entrada": b["Total de Entrada"][-1],
+            "alnulu":               calcular_alnulu(text_ent),
+            "Total de Saída":       b["Total de Saída"],
+            "ultimo_child_saida":   b["Total de Saída"][-1]
+        })
+
+    seq = [b["bloco_id"] for b in uni_ida["blocos"]]
+    sdb = um_root.get(idx_mae,{}).get("cb",{}).get("sdb",[])
+    sdb.append({"sequencia": seq, "VA": False})
+
+    um_root[idx_mae] = {
+        "Universo Mãe": nome_mae,
+        "blocos":       blocos,
+        "cb": {
+            "status": uni_ida.get("cb",{}).get("status","Indisponível"),
+            "sdb":    sdb
+        }
+    }
+    save_json(um_all, JSON_UM)
+
+def manage_universes() -> None:
+    ida = load_json(JSON_IDA)
+    ims = ida.setdefault("IDA", {}).setdefault("IM", {})
+
     while True:
-        print("\n=== Gerenciar Universos ===")
-        print("1) Listar Universos")
-        print("2) Criar Universo")
-        print("3) Renomear Universo")
-        print("4) Excluir Universo")
-        print("5) Voltar")
+        print("\n=== Gerenciar Universos (IDA) ===")
+        print("1) Listar\n2) Criar\n3) Renomear\n4) Excluir\n5) Voltar")
         opt = input("Escolha [1-5]: ").strip()
+
         if opt == "1":
-            show_summary(base)
+            if not ims:
+                print("  (nenhum universo cadastrado)")
+            else:
+                for idx,u in ims.items():
+                    print(f"  IM={idx} → nome='{u.get('nome','')}'")
+
         elif opt == "2":
-            create_universe(base)
+            idx  = input("Novo índice IM: ").strip()
+            if not idx.isdigit() or idx in ims:
+                print("Índice inválido ou já existe."); continue
+            nome = input("Nome do Universo: ").strip()
+            if input(f"Criar IM={idx} '{nome}'? (S/N): ").lower() != "s":
+                print("Cancelado."); continue
+            ims[idx] = {"nome": nome, "blocos": []}
+            save_json(ida, JSON_IDA)
+            derive_um(idx)
+
         elif opt == "3":
-            rename_universe(base)
+            idx = input("IM a renomear: ").strip()
+            uni = ims.get(idx)
+            if not uni:
+                print("Não encontrado."); continue
+            novo = input(f"Novo nome para IM={idx} ('{uni['nome']}'): ").strip()
+            if input("Confirmar? (S/N): ").lower() != "s":
+                print("Cancelado."); continue
+            uni["nome"] = novo
+            save_json(ida, JSON_IDA)
+            derive_um(idx)
+
         elif opt == "4":
-            delete_universe(base)
+            idx = input("IM para excluir: ").strip()
+            if idx not in ims:
+                print("Não encontrado."); continue
+            if input(f"Excluir IM={idx} '{ims[idx]['nome']}'? (S/N): ").lower() != "s":
+                print("Cancelado."); continue
+            del ims[idx]
+            save_json(ida, JSON_IDA)
+            um = load_json(JSON_UM)
+            um.get("UM",{}).pop(idx,None)
+            save_json(um, JSON_UM)
+
         elif opt == "5":
             break
         else:
             print("Opção inválida.")
 
-# ——— Gerenciar Blocos —————————————————————————————————
-
-def list_blocks(uni: Dict[str, Any]) -> None:
-    if not uni["blocos"]:
-        print("  (nenhum bloco cadastrado)")
-        return
-    for b in uni["blocos"]:
-        snippet = b["entrada"]["texto"][:30].replace("\n", " ")
-        print(f"  Bloco {b['bloco_id']}: \"{snippet}...\"")
-
-def delete_block(base: Dict[str, Any], mom: str) -> None:
-    uni = base.get("IM", {}).get(mom)
-    if not uni:
+def manage_blocks() -> None:
+    ida = load_json(JSON_IDA).get("IDA",{}).get("IM",{})
+    idx = input("Índice IM para gerir blocos: ").strip()
+    if idx not in ida:
         print("Universo não encontrado."); return
-    bid = input("Número do bloco p/ deletar: ").strip()
-    if not bid.isdigit():
-        print("ID inválido."); return
-    if input(f"Excluir bloco {bid}? (S/N): ").lower() != "s":
-        print("Cancelado."); return
-    before = len(uni["blocos"])
-    uni["blocos"] = [b for b in uni["blocos"] if b["bloco_id"] != int(bid)]
-    save_json(base)
-    print("Bloco excluído." if len(uni["blocos"]) < before else "Bloco não encontrado.")
-
-def process_block(base: Dict[str, Any], mom: str, tpl: Dict[str, Any]) -> None:
-    uni = base["IM"].setdefault(mom, {
-        "nome": mom,
-        "ultimo_child": f"{mom}.0",
-        "blocos": [], "cb": {"status":"Indisponível","sdb":[]}
-    })
-    last = uni["ultimo_child"]
-    aln = calcular_alnulu(tpl["entrada"]["texto"])
-
-    E    = Token(tpl["entrada"]["texto"])
-    RE   = Token(tpl["entrada"]["reacao"])
-    CE   = Token(tpl["entrada"]["contexto"])
-    PIDE = Token(tpl["entrada"]["pensamento_interno"])[:3]
-
-    EXDS = Token(tpl["saida"]["explicacao"])[:3]
-    IME  = Token(tpl["saida"]["imersao"])[:3]
-
-    S_list = []
-    for t in tpl["saida"]["textos"]:
-        S_list += Token(t)
-
-    RS   = Token(tpl["saida"]["reacao"])
-    CS   = Token(tpl["saida"]["contexto"])
-
-    te = len(E) + len(RE) + len(CE) + len(PIDE)
-    to = len(EXDS) + len(IME) + len(S_list) + len(RS) + len(CS)
-
-    marks = generate_markers(last, te + to)
-    ent, out = marks[:te], marks[te:]
-    fim_ent = ent[-1] if ent else last
-    fim_out = out[-1] if out else fim_ent
-
-    idx = 0
-    Em  = ent[idx: idx+len(E)];     idx += len(E)
-    REm = ent[idx: idx+len(RE)];    idx += len(RE)
-    CEm = ent[idx: idx+len(CE)];    idx += len(CE)
-    PIm = ent[idx: idx+len(PIDE)]
-
-    j    = 0
-    EXm  = out[j: j+len(EXDS)];    j += len(EXDS)
-    IMm  = out[j: j+len(IME)];     j += len(IME)
-    Sm   = out[j: j+len(S_list)];  j += len(S_list)
-    RSm  = out[j: j+len(RS)];      j += len(RS)
-    CSm  = out[j: j+len(CS)]
-
-    uni["ultimo_child"] = fim_out
-
-    bloco = {
-        **tpl,
-        "entrada": {
-            **tpl["entrada"],
-            "tokens": {"E":Em,"RE":REm,"CE":CEm,"PIDE":PIm,"TOTAL":ent},
-            "fim": fim_ent, "alnulu": aln
-        },
-        "saidas": [{
-            **tpl["saida"],
-            "tokens": {"EXDS":EXm,"IME":IMm,"S":Sm,"RS":RSm,"CS":CSm,"TOTAL":out},
-            "fim": fim_out
-        }],
-        "open": True
-    }
-
-    if tpl.get("bloco_id") is not None:
-        bid = tpl["bloco_id"]
-        for i,b in enumerate(uni["blocos"]):
-            if b["bloco_id"] == bid:
-                bloco["bloco_id"] = bid
-                uni["blocos"][i] = bloco
-                print(f"Bloco {bid} atualizado.")
-                break
-        else:
-            bloco["bloco_id"] = bid
-            uni["blocos"].append(bloco)
-            print(f"Bloco {bid} criado.")
-    else:
-        bid = max((b["bloco_id"] for b in uni["blocos"]), default=0) + 1
-        bloco["bloco_id"] = bid
-        uni["blocos"].append(bloco)
-        print(f"Bloco {bid} criado.")
-
-    seq = [b["bloco_id"] for b in uni["blocos"]]
-    uni.setdefault("cb", {}).setdefault("sdb", []).append({"sequencia": seq, "VA": False})
-
-def manage_blocks(base: Dict[str, Any]) -> None:
-    mom = input("Índice Mãe para gerenciar blocos: ").strip()
-    uni = base.get("IM", {}).get(mom)
-    if not uni:
-        print("Universo não encontrado."); return
-
+    print("Cole um bloco e termine em branco:")
+    lines: List[str] = []
     while True:
-        print(f"\n=== Gerenciar Blocos de IM '{mom}' ===")
-        print("1) Listar Blocos")
-        print("2) Criar/Atualizar Bloco(s)")
-        print("3) Excluir Bloco")
-        print("4) Voltar")
-        opt = input("Escolha [1-4]: ").strip()
+        ln = input().rstrip()
+        if not ln: break
+        lines.append(ln)
+    tpl = parse_block(lines)
+    process_block(idx, tpl)
 
-        if opt == "1":
-            list_blocks(uni)
-
-        elif opt == "2":
-            multi = input("Criar vários blocos? (S/N): ").strip().lower()
-            if multi == "s":
-                print("Cole os blocos (cada um começando em 'Bloco:' ou '🧱') e termine com linha em branco:")
-                buf: List[str] = []
-                blank = False
-                while True:
-                    ln = input()
-                    if ln == "":
-                        if blank:
-                            break
-                        blank = True
-                        buf.append("")
-                    else:
-                        blank = False
-                        buf.append(ln)
-
-                groups: List[List[str]] = []
-                cur: List[str] = []
-                for ln in buf:
-                    if re.match(r'^(?:Bloco:|🧱)', ln):
-                        if cur:
-                            groups.append(cur)
-                            cur = []
-                        cur.append(ln)
-                    elif ln.strip() == "":
-                        if cur:
-                            groups.append(cur)
-                            cur = []
-                    else:
-                        cur.append(ln)
-                if cur:
-                    groups.append(cur)
-
-                created = 0
-                for grp in groups:
-                    tpl = parse_block(grp)
-                    process_block(base, mom, tpl)
-                    created += 1
-                save_json(base)
-                print(f"\n✅ Lote concluído: {created}/{len(groups)} blocos processados.")
-                input("Enter para voltar ao menu de blocos...")
-                return
-
-            else:
-                print("Cole um bloco e termine com linha em branco:")
-                lines: List[str] = []
-                while True:
-                    ln = input().rstrip()
-                    if not ln:
-                        break
-                    lines.append(ln)
-                tpl = parse_block(lines)
-                process_block(base, mom, tpl)
-                save_json(base)
-                input("Enter para voltar ao menu de blocos...")
-                return
-
-        elif opt == "3":
-            delete_block(base, mom)
-
-        elif opt == "4":
-            break
-
-        else:
-            print("Opção inválida.")
-
-def main():
-    try:
-        with open("adam_memoria.json", encoding="utf-8") as f:
-            base = json.load(f)
-    except FileNotFoundError:
-        base = {"IM": {}}
-    except Exception as e:
-        print(f"Erro ao abrir JSON: {e}")
-        sys.exit(1)
-
+def main() -> None:
     while True:
-        print("\n=== Menu Principal ===")
-        print("1) Gerenciar Universos")
-        print("2) Gerenciar Blocos")
-        print("3) Sair")
+        print("\n=== Insepa CLI ===")
+        print("1) Gerenciar Universos\n2) Gerenciar Blocos\n3) Sair")
         opt = input("Escolha [1-3]: ").strip()
         if opt == "1":
-            manage_universes(base)
+            manage_universes()
         elif opt == "2":
-            manage_blocks(base)
+            manage_blocks()
         elif opt == "3":
-            print("Encerrando.")
-            break
+            print("Encerrando."); break
         else:
             print("Opção inválida.")
 
 if __name__ == "__main__":
     main()
-
 
