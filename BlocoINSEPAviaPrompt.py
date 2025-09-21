@@ -64,18 +64,14 @@ def calcular_alnulu(texto: str) -> int:
 def parse_block(lines: List[str]) -> Dict[str, Any]:
     tpl = {
         "bloco_id": None,
-        "entrada": {
-            "texto": "", "reacao": "", "contexto": "", "pensamento_interno": []
-        },
-        "saida": {
-            "TEX": [], "reacao": "", "contexto": ""
-        }
+        "entrada": {"texto": "", "reacao": "", "contexto": "", "pensamento_interno": []},
+        "saida":   {"TEX": [], "reacao": "", "contexto": ""}
     }
     sec: Optional[str] = None
 
     for raw in lines:
         line = raw.strip()
-        low = line.lower()
+        low  = line.lower()
 
         if low.startswith("entrada:"):
             tpl["entrada"]["texto"] = line.partition(":")[2].strip()
@@ -103,7 +99,7 @@ def parse_block(lines: List[str]) -> Dict[str, Any]:
         if sec == "out_txt" and line.startswith("—"):
             tpl["saida"]["TEX"].append(line.lstrip("—").strip()); continue
 
-        if sec in ("out_txt", "out_meta") and low.startswith("reação:"):
+        if sec in ("out_txt","out_meta") and low.startswith("reação:"):
             tpl["saida"]["reacao"] = line.partition(":")[2].strip()
             sec = "out_meta"; continue
 
@@ -118,34 +114,26 @@ def build_ida_block(
     tpl: Dict[str, Any],
     last_marker: str
 ) -> Tuple[Dict[str, Any], str, str]:
-    # 1) tokenização de entrada
     E   = Token(tpl["entrada"]["texto"])
     RE  = Token(tpl["entrada"]["reacao"])
     CE  = Token(tpl["entrada"]["contexto"])
     SI  = tpl["entrada"]["pensamento_interno"][:3]
 
-    # 2) split narrativo em segmentos por aspas
     raw   = tpl["saida"]["TEX"].pop(0)
     parts = re.split(r'(".*?")', raw)
     parts = [p.strip() for p in parts if p.strip()]
 
-    # 3) falas restantes
     fale_strs = tpl["saida"]["TEX"]
-
-    # 4) reação/contexto de saída
     RS = Token(tpl["saida"]["reacao"])
     CS = Token(tpl["saida"]["contexto"])
 
-    # 5) quantos marcadores TEX precisamos
     seg_count   = len(parts)
     fala_tok_ct = [len(Token(f)) for f in fale_strs]
     TEX_count   = seg_count + sum(fala_tok_ct)
 
-    # 6) total geral
     total = len(E) + len(RE) + len(CE) + len(SI) \
           + TEX_count + len(RS) + len(CS)
 
-    # 7) gera marcadores
     marks = generate_markers(last_marker, total)
     ptr = 0
 
@@ -153,8 +141,7 @@ def build_ida_block(
     REm = marks[ptr:ptr+len(RE)];   ptr += len(RE)
     CEm = marks[ptr:ptr+len(CE)];   ptr += len(CE)
     PIm = marks[ptr:ptr+len(SI)];   ptr += len(SI)
-
-    SM = marks[ptr:ptr+seg_count];  ptr += seg_count
+    SM  = marks[ptr:ptr+seg_count]; ptr += seg_count
 
     FM_slices: List[List[str]] = []
     for ct in fala_tok_ct:
@@ -164,7 +151,6 @@ def build_ida_block(
     RSm = marks[ptr:ptr+len(RS)];    ptr += len(RS)
     CSm = marks[ptr:ptr+len(CS)]
 
-    # 8) monta JSON do bloco
     bloco = {
         "bloco_id": tpl.get("bloco_id"),
         "Entrada": [
@@ -216,45 +202,120 @@ def build_ida_block(
     }
     return bloco, (PIm or CEm or REm or Em)[-1], (CSm or RSm or SM)[-1]
 
+def prompt_vars_and_multivars(bloco: Dict[str, Any], entrada_texto: str) -> None:
+    # VARS ATÔMICAS NA ENTRADA
+    marc_ent = [e["E"] for e in bloco["Entrada"]]
+    print("\nTokens de Entrada segmentados:")
+    for i, ent in enumerate(bloco["Entrada"], 1):
+        print(f"  {i}) {ent['t']}  [{ent['E']}]")
+
+    while True:
+        sel = input("Variação de token? Índice, marcador ou ENTER: ").strip()
+        if not sel:
+            break
+        if sel in marc_ent:
+            idx = marc_ent.index(sel)
+        elif sel.isdigit() and 1 <= int(sel) <= len(bloco["Entrada"]):
+            idx = int(sel) - 1
+        else:
+            print("Entrada inválida."); continue
+
+        ent = bloco["Entrada"][idx]
+        new_vars: List[str] = []
+        while True:
+            v = input(f"  Nova var para '{ent['t']}' (ENTER interrompe): ").strip()
+            if not v:
+                break
+            new_vars.append(v)
+        if new_vars:
+            ent["vars"] = new_vars
+
+    # MULTIVARS DE ENTRADA
+    ent_mvs: List[str] = []
+    print("\nMultivars para a frase de Entrada:")
+    while True:
+        mv = input("  Digite multivars (ENTER interrompe): ").strip()
+        if not mv:
+            break
+        ent_mvs.append(mv)
+
+    bloco["Entrada Composta"] = {
+        "EC": [e["E"] for e in bloco["Entrada"]],
+        "t": entrada_texto,
+        "Multivars": ent_mvs
+    }
+
+    # VARS ATÔMICAS NA SAÍDA
+    falas = bloco["Saída"]["Tex"]["S"]
+    marc_sai = [f["S"] for f in falas]
+    print("\nTokens de Saída (Falas) segmentados:")
+    for i, f in enumerate(falas, 1):
+        print(f"  {i}) {f['t']}  [{f['S']}]")
+
+    while True:
+        sel = input("Variação de token na Saída? Índice, marcador ou ENTER: ").strip()
+        if not sel:
+            break
+        if sel in marc_sai:
+            idx = marc_sai.index(sel)
+        elif sel.isdigit() and 1 <= int(sel) <= len(falas):
+            idx = int(sel) - 1
+        else:
+            print("Entrada inválida."); continue
+
+        f = falas[idx]
+        new_vars: List[str] = []
+        while True:
+            v = input(f"  Nova var para '{f['t']}' (ENTER interrompe): ").strip()
+            if not v:
+                break
+            new_vars.append(v)
+        if new_vars:
+            f["vars"] = new_vars
+
+    # MULTIVARS DE SAÍDA
+    sa_mvs: List[str] = []
+    print("\nMultivars para a frase de Saída:")
+    while True:
+        mv = input("  Digite multivars (ENTER interrompe): ").strip()
+        if not mv:
+            break
+        sa_mvs.append(mv)
+
+    bloco["Saída"]["Saída Composta"] = {
+        "SC": [[f["S"] for f in bloco["Saída"]["Tex"]["S"]]],
+        "t": [],
+        "Multivars": sa_mvs
+    }
+
 def print_block_summary(bloco: Dict[str, Any]) -> None:
-    ent_lst     = bloco["Entrada"]
-    re_ent_lst  = bloco["Reação"]
-    ctx_ent_lst = bloco["Contexto"]
-    sent_ent    = bloco["Sentimento da Entrada"]
-    tend_ent    = bloco["Tendência da Entrada"]
-    pin_lst     = bloco["Pensamento Interno"]
-    tex_items   = bloco["Saída"]["Tex"]["S"]
-    re_sai_lst  = bloco["Saída"]["Reação de Saída"]
-    ctx_sai_lst = bloco["Saída"]["Contexto de Saída"]
+    ent = bloco["Entrada"][0]["t"] if bloco["Entrada"] else ""
+    re_ent = bloco["Reação"][0]["t"] if bloco["Reação"] else ""
+    ctx_ent = bloco["Contexto"][0]["t"] if bloco["Contexto"] else ""
+    pin = " ".join(p["t"] for p in bloco["Pensamento Interno"])
+    tex = bloco["Saída"]["Tex"]["S"]
+    re_sai = bloco["Saída"]["Reação de Saída"][0]["t"] if bloco["Saída"]["Reação de Saída"] else ""
+    ctx_sai = bloco["Saída"]["Contexto de Saída"][0]["t"] if bloco["Saída"]["Contexto de Saída"] else ""
 
-    e_txt   = ent_lst[0]["t"] if ent_lst else ""
-    r_txt   = re_ent_lst[0]["t"] if re_ent_lst else ""
-    c_txt   = ctx_ent_lst[0]["t"] if ctx_ent_lst else ""
-    pin_txt = " ".join(p["t"] for p in pin_lst)
-    r_sai   = re_sai_lst[0]["t"] if re_sai_lst else ""
-    c_sai   = ctx_sai_lst[0]["t"] if ctx_sai_lst else ""
-
-    print("Bloco:")
-    print(f'Entrada: "{e_txt}"')
-    print(f'Reação: {r_txt} Contexto: {c_txt}')
-    print(f'Sentimento da Entrada: {sent_ent} Tendência da Entrada: {tend_ent}')
-    print(f'Pensamento Interno: "{pin_txt}"')
-    print("Saída → Tex → S:")
-    for item in tex_items:
-        print(f'  {{S: "{item["S"]}", t: "{item["t"]}"}}')
-    print(f'Reação de Saída: {r_sai}')
-    print(f'Contexto de Saída: {c_sai}')
-    print('---')
+    print("\n--- Resumo do Bloco ---")
+    print(f'Entrada: "{ent}"')
+    print(f'Reação: {re_ent} | Contexto: {ctx_ent}')
+    print(f'Pensamento Interno: "{pin}"')
+    print("Saída → Falas:")
+    for item in tex:
+        print(f'  {{S:"{item["S"]}", t:"{item["t"]}"}}')
+    print(f'Reação de Saída: {re_sai} | Contexto de Saída: {ctx_sai}')
+    print("-----------------------")
 
 def derive_um(idx_mae: str) -> None:
     ida_all = load_json(JSON_IDA)
     uni_ida = ida_all["IDA"]["IM"][idx_mae]
-    nome_mae = uni_ida.get("nome","")
+    nome = uni_ida.get("nome","")
 
     um_all = load_json(JSON_UM)
     um_root = um_all.setdefault("UM", {})
-
     blocos = []
+
     for b in uni_ida["blocos"]:
         aln_ent = {it["E"]: calcular_alnulu(it["t"]) for it in b["Entrada"]}
         tex_items = b["Saída"]["Tex"]["S"]
@@ -271,10 +332,12 @@ def derive_um(idx_mae: str) -> None:
             "bloco_id": b["bloco_id"],
             "Total de Entrada": b["Total de Entrada"],
             "ultimo_child_entrada": b["Total de Entrada"][-1],
-            "alnulu_por_palavra_entrada": aln_ent,
-            "alnulu_total_entrada": total_ent,
+            "Entrada Composta": b.get("Entrada Composta", {}),
             "Total de Saída": b["Total de Saída"],
             "ultimo_child_saida": b["Total de Saída"][-1],
+            "Saída Composta": b["Saída"].get("Saída Composta", {}),
+            "alnulu_por_palavra_entrada": aln_ent,
+            "alnulu_total_entrada": total_ent,
             "alnulu_por_palavra_saida": {**aln_tex, **aln_rs, **aln_cs},
             "alnulu_total_saida": total_sai,
             "alnulu_total_bloco": total_ent + total_sai
@@ -282,7 +345,7 @@ def derive_um(idx_mae: str) -> None:
 
     seq = [blk["bloco_id"] for blk in uni_ida["blocos"]]
     um_root[idx_mae] = {
-        "Universo Mãe": nome_mae,
+        "Universo Mãe": nome,
         "blocos": blocos,
         "cb": {"status": "Indisponível", "sdb":[{"sequencia":seq,"VA":False}]}
     }
@@ -291,52 +354,46 @@ def derive_um(idx_mae: str) -> None:
 def manage_universes() -> None:
     ida = load_json(JSON_IDA)
     ims = ida.setdefault("IDA",{}).setdefault("IM",{})
-
     while True:
-        print("\n=== Gerenciar Universos (IDA) ===")
+        print("\n=== Universos ===")
         print("1) Listar  2) Criar  3) Renomear  4) Excluir  5) Voltar")
-        opt = input("Escolha [1-5]: ").strip()
+        opt = input("Opção [1-5]: ").strip()
         if opt == "1":
-            if not ims:
-                print("  (nenhum universo)")
-            else:
-                for idx,u in ims.items():
-                    print(f"  IM={idx} → '{u.get('nome','')}'")
+            for idx,u in ims.items():
+                print(f"  IM={idx} → '{u.get('nome','')}'")
         elif opt == "2":
-            idx = input("Novo índice IM: ").strip()
+            idx = input("Novo IM: ").strip()
             if not idx.isdigit() or idx in ims:
-                print("Inválido ou já existe."); continue
-            nome= input("Nome do Universo: ").strip()
-            if input(f"Criar IM={idx} '{nome}'? (S/N): ").lower()!="s":
-                print("Cancelado."); continue
+                print("Inválido."); continue
+            nome = input("Nome: ").strip()
+            if input(f"Criar IM={idx}? (S/N): ").lower()!="s": continue
             ims[idx]={"nome":nome,"blocos":[]}
             save_json(ida,JSON_IDA); derive_um(idx)
-        elif opt=="3":
-            idx=input("IM a renomear: ").strip()
+        elif opt == "3":
+            idx=input("IM para renomear: ").strip()
             if idx not in ims: print("Não existe."); continue
-            novo=input(f"Novo nome ('{ims[idx]['nome']}'): ").strip()
-            if input("Confirma? (S/N): ").lower()!="s": print("Cancelado."); continue
+            novo=input("Novo nome: ").strip()
+            if input("Confirma? (S/N): ").lower()!="s": continue
             ims[idx]['nome']=novo; save_json(ida,JSON_IDA); derive_um(idx)
-        elif opt=="4":
+        elif opt == "4":
             idx=input("IM para excluir: ").strip()
             if idx not in ims: print("Não existe."); continue
-            if input(f"Excluir IM={idx}? (S/N): ").lower()!="s":
-                print("Cancelado."); continue
+            if input("Excluir? (S/N): ").lower()!="s": continue
             del ims[idx]; save_json(ida,JSON_IDA)
             um = load_json(JSON_UM); um.get("UM",{}).pop(idx,None)
             save_json(um,JSON_UM)
-        elif opt=="5":
+        elif opt == "5":
             break
         else:
             print("Inválido.")
 
 def manage_blocks() -> None:
     ida = load_json(JSON_IDA).get("IDA",{}).get("IM",{})
-    idx = input("IM para gerir blocos: ").strip()
+    idx = input("IM para blocos: ").strip()
     if idx not in ida:
-        print("Universo não encontrado."); return
+        print("Não encontrado."); return
 
-    print("Cole até 20 blocos, separados por '---'. Termine com linha em branco:")
+    print("Cole até 20 blocos, termine com linha em branco:")
     lines: List[str] = []
     while True:
         ln = input().rstrip()
@@ -353,48 +410,47 @@ def manage_blocks() -> None:
     if current:
         raw_blocks.append(current)
 
-    count = min(len(raw_blocks),20)
-    for raw in raw_blocks[:count]:
+    for raw in raw_blocks[:20]:
         tpl = parse_block(raw)
         process_block(idx, tpl)
-    print(f"{count} bloco(s) processado(s).")
+    print(f"{len(raw_blocks[:20])} bloco(s) processado(s).")
 
 def process_block(idx_mae: str, tpl: Dict[str, Any]) -> None:
     ida = load_json(JSON_IDA)
-    ims = ida.setdefault("IDA",{}).setdefault("IM",{})
-    uni = ims.setdefault(idx_mae,{"nome":"","blocos":[]})
-
+    uni = ida.setdefault("IDA",{}).setdefault("IM",{}).setdefault(idx_mae,{"nome":"","blocos":[]})
     um_all = load_json(JSON_UM).get("UM",{})
     last = f"{idx_mae}.0"
     if um_all.get(idx_mae,{}).get("blocos"):
         last = um_all[idx_mae]["blocos"][-1]["ultimo_child_saida"]
 
-    bloco, _, _ = build_ida_block(tpl,last)
+    bloco, _, _ = build_ida_block(tpl, last)
+    prompt_vars_and_multivars(bloco, tpl["entrada"]["texto"])
     print_block_summary(bloco)
 
     if bloco["bloco_id"] is None:
-        bloco["bloco_id"] = max((b["bloco_id"] for b in uni["blocos"]),default=0)+1
+        bloco["bloco_id"] = max((b["bloco_id"] for b in uni["blocos"]), default=0) + 1
 
     for i,b in enumerate(uni["blocos"]):
-        if b["bloco_id"]==bloco["bloco_id"]:
-            uni["blocos"][i]=bloco; break
+        if b["bloco_id"] == bloco["bloco_id"]:
+            uni["blocos"][i] = bloco
+            break
     else:
         uni["blocos"].append(bloco)
 
-    save_json(ida,JSON_IDA)
+    save_json(ida, JSON_IDA)
     derive_um(idx_mae)
 
 def main() -> None:
     while True:
         print("\n=== Insepa CLI ===")
-        print("1) Gerenciar Universos  2) Gerenciar Blocos  3) Sair")
-        opt = input("Escolha [1-3]: ").strip()
+        print("1) Universos  2) Blocos  3) Sair")
+        opt = input("Opção [1-3]: ").strip()
         if opt == "1":
             manage_universes()
         elif opt == "2":
             manage_blocks()
         elif opt == "3":
-            print("Encerrando."); break
+            print("Saindo."); break
         else:
             print("Inválido.")
 
