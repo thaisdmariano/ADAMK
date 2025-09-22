@@ -61,13 +61,44 @@ def calcular_alnulu(texto: str) -> int:
         total += mapa.get(norm, 0)
     return total
 
+def unique_preserve_order(items: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for x in items:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
 def parse_block(lines: List[str]) -> Dict[str, Any]:
     tpl = {
         "bloco_id": None,
         "entrada": {"texto": "", "reacao": "", "contexto": "", "pensamento_interno": []},
-        "saida":   {"TEX": [], "reacao": "", "contexto": ""}
+        "saida":   {"TEX_FR": [], "FS": [], "reacao": "", "contexto": ""}
     }
     sec: Optional[str] = None
+
+    def add_texto_integral(content: str) -> None:
+        text = content.strip()
+        if text:
+            tpl["saida"]["TEX_FR"].append(text)
+
+    def add_texto_por_aspas(content: str) -> None:
+        # captura blocos "..."; resíduos fora das aspas entram como TEX único
+        quoted = re.findall(r'"([^"]+)"', content)
+        residual = re.sub(r'"[^"]+"', " ", content).strip()
+        for q in quoted:
+            q = q.strip()
+            if q:
+                tpl["saida"]["TEX_FR"].append(q)
+        residual = re.sub(r"\s+", " ", residual).strip()
+        if residual:
+            tpl["saida"]["TEX_FR"].append(residual)
+
+    def add_texto_por_ponto(content: str) -> None:
+        parts = re.findall(r'[^.?!]+[.?!]', content)
+        parts = [p.strip() for p in parts if p.strip()]
+        tpl["saida"]["TEX_FR"].extend(parts)
 
     for raw in lines:
         line = raw.strip()
@@ -85,19 +116,31 @@ def parse_block(lines: List[str]) -> Dict[str, Any]:
 
         if sec == "ent" and low.startswith("pensamento interno:"):
             tpl["entrada"]["pensamento_interno"].append(
-                line.partition(":")[2].strip()
+                line.partition(":")[2].strip().strip('"')
             ); continue
 
+        # Saída: escolha do modo de Texto
+        if low.startswith("texto.:"):
+            content = line.split(":", 1)[1].strip()
+            add_texto_por_ponto(content)
+            sec = "out_txt"; continue
+
         if low.startswith("texto:"):
-            content = line.partition(":")[2].strip()
-            tpl["saida"]["TEX"].insert(0, content)
+            content = line.split(":", 1)[1].strip()
+            if '"' in content:
+                add_texto_por_aspas(content)
+            else:
+                add_texto_integral(content)
             sec = "out_txt"; continue
 
         if low == "saída:":
             sec = "out_txt"; continue
 
         if sec == "out_txt" and line.startswith("—"):
-            tpl["saida"]["TEX"].append(line.lstrip("—").strip()); continue
+            fala = line.lstrip("—").strip()
+            if fala:
+                tpl["saida"]["FS"].append(fala)
+            continue
 
         if sec in ("out_txt","out_meta") and low.startswith("reação:"):
             tpl["saida"]["reacao"] = line.partition(":")[2].strip()
@@ -114,26 +157,27 @@ def build_ida_block(
     tpl: Dict[str, Any],
     last_marker: str
 ) -> Tuple[Dict[str, Any], str, str]:
+    # Entrada
     E   = Token(tpl["entrada"]["texto"])
     RE  = Token(tpl["entrada"]["reacao"])
     CE  = Token(tpl["entrada"]["contexto"])
     SI  = tpl["entrada"]["pensamento_interno"][:3]
 
-    raw   = tpl["saida"]["TEX"].pop(0)
-    parts = re.split(r'(".*?")', raw)
-    parts = [p.strip() for p in parts if p.strip()]
+    # Saída
+    tex_frases: List[str] = unique_preserve_order(tpl["saida"].get("TEX_FR", []))
+    fs_list: List[str]    = tpl["saida"].get("FS", [])
 
-    fale_strs = tpl["saida"]["TEX"]
     RS = Token(tpl["saida"]["reacao"])
     CS = Token(tpl["saida"]["contexto"])
 
-    seg_count   = len(parts)
-    fala_tok_ct = [len(Token(f)) for f in fale_strs]
-    TEX_count   = seg_count + sum(fala_tok_ct)
+    # Contagens para marcadores
+    TEX_count = len(tex_frases)
+    S_tokens_per_fala = [Token(fs) for fs in fs_list]
+    S_count = sum(len(toks) for toks in S_tokens_per_fala)
 
-    total = len(E) + len(RE) + len(CE) + len(SI) \
-          + TEX_count + len(RS) + len(CS)
+    total = len(E) + len(RE) + len(CE) + len(SI) + TEX_count + S_count + len(RS) + len(CS)
 
+    # Marcadores
     marks = generate_markers(last_marker, total)
     ptr = 0
 
@@ -141,15 +185,27 @@ def build_ida_block(
     REm = marks[ptr:ptr+len(RE)];   ptr += len(RE)
     CEm = marks[ptr:ptr+len(CE)];   ptr += len(CE)
     PIm = marks[ptr:ptr+len(SI)];   ptr += len(SI)
-    SM  = marks[ptr:ptr+seg_count]; ptr += seg_count
 
-    FM_slices: List[List[str]] = []
-    for ct in fala_tok_ct:
-        FM_slices.append(marks[ptr:ptr+ct])
-        ptr += ct
+    TM  = marks[ptr:ptr+TEX_count]; ptr += TEX_count
+    SM  = marks[ptr:ptr+S_count];   ptr += S_count
 
-    RSm = marks[ptr:ptr+len(RS)];    ptr += len(RS)
+    RSm = marks[ptr:ptr+len(RS)];   ptr += len(RS)
     CSm = marks[ptr:ptr+len(CS)]
+
+    # Monta TEX
+    saida_texto_items: List[Dict[str, Any]] = [
+        {"TEX": tm, "t": frase, "vars": tpl.get("vars_TEX",{}).get(tm,["0.0"])}
+        for tm, frase in zip(TM, tex_frases)
+    ]
+
+    # Monta S (todas as falas, tokenizadas)
+    sm_iter = iter(SM)
+    for tokens in S_tokens_per_fala:
+        for tok in tokens:
+            m = next(sm_iter)
+            saida_texto_items.append(
+                {"S": m, "t": tok, "vars": tpl.get("vars_TEX",{}).get(m,["0.0"])}
+            )
 
     bloco = {
         "bloco_id": tpl.get("bloco_id"),
@@ -157,6 +213,7 @@ def build_ida_block(
             {"E": m, "t": tok, "vars": tpl.get("vars_entrada",{}).get(m,["0.0"])}
             for m,tok in zip(Em, E)
         ],
+        "Multivars": tpl.get("Multivars", []),
         "Reação": [
             {"RE": m, "t": tok, "vars": tpl.get("vars_reacao",{}).get(m,["0.0"])}
             for m,tok in zip(REm, RE)
@@ -173,19 +230,8 @@ def build_ida_block(
         ],
         "Total de Entrada": Em + REm + CEm + PIm,
         "Saída": {
-            "Tex": {
-                "S": [
-                    *[
-                        {"S": sm, "t": part, "vars": tpl.get("vars_TEX",{}).get(sm,["0.0"])}
-                        for sm,part in zip(SM, parts)
-                    ],
-                    *[
-                        {"S": m, "t": tok, "vars": tpl.get("vars_TEX",{}).get(m,["0.0"])}
-                        for slice_, fala in zip(FM_slices, fale_strs)
-                        for m,tok in zip(slice_, Token(fala))
-                    ]
-                ]
-            },
+            "Texto": saida_texto_items,
+            "Multivars": tpl.get("Multivars_saida", []),
             "Reação de Saída": [
                 {"RS": m, "t": tok, "vars": tpl.get("vars_reacao_saida",{}).get(m,["0.0"])}
                 for m,tok in zip(RSm, RS)
@@ -198,9 +244,9 @@ def build_ida_block(
             "Tendência da Saída": "0.0",
             "Ressonância": False
         },
-        "Total de Saída": SM + [m for sl in FM_slices for m in sl] + RSm + CSm
+        "Total de Saída": TM + SM + RSm + CSm
     }
-    return bloco, (PIm or CEm or REm or Em)[-1], (CSm or RSm or SM)[-1]
+    return bloco, (PIm or CEm or REm or Em)[-1], (CSm or RSm or SM or TM)[-1]
 
 def prompt_vars_and_multivars(bloco: Dict[str, Any], entrada_texto: str) -> None:
     # VARS ATÔMICAS NA ENTRADA
@@ -238,19 +284,16 @@ def prompt_vars_and_multivars(bloco: Dict[str, Any], entrada_texto: str) -> None
         if not mv:
             break
         ent_mvs.append(mv)
+    if ent_mvs:
+        bloco["Multivars"] = ent_mvs
 
-    bloco["Entrada Composta"] = {
-        "EC": [e["E"] for e in bloco["Entrada"]],
-        "t": entrada_texto,
-        "Multivars": ent_mvs
-    }
-
-    # VARS ATÔMICAS NA SAÍDA
-    falas = bloco["Saída"]["Tex"]["S"]
-    marc_sai = [f["S"] for f in falas]
-    print("\nTokens de Saída (Falas) segmentados:")
+    # VARS ATÔMICAS NA SAÍDA (TEX e S)
+    falas = bloco["Saída"]["Texto"]
+    marc_sai = [f.get("S", f.get("TEX")) for f in falas]
+    print("\nTokens de Saída segmentados (TEX/S):")
     for i, f in enumerate(falas, 1):
-        print(f"  {i}) {f['t']}  [{f['S']}]")
+        ident = f.get("S", f.get("TEX"))
+        print(f"  {i}) {f['t']}  [{ident}]")
 
     while True:
         sel = input("Variação de token na Saída? Índice, marcador ou ENTER: ").strip()
@@ -281,29 +324,29 @@ def prompt_vars_and_multivars(bloco: Dict[str, Any], entrada_texto: str) -> None
         if not mv:
             break
         sa_mvs.append(mv)
-
-    bloco["Saída"]["Saída Composta"] = {
-        "SC": [[f["S"] for f in bloco["Saída"]["Tex"]["S"]]],
-        "t": [],
-        "Multivars": sa_mvs
-    }
+    if sa_mvs:
+        bloco["Saída"]["Multivars"] = sa_mvs
 
 def print_block_summary(bloco: Dict[str, Any]) -> None:
     ent = bloco["Entrada"][0]["t"] if bloco["Entrada"] else ""
     re_ent = bloco["Reação"][0]["t"] if bloco["Reação"] else ""
-    ctx_ent = bloco["Contexto"][0]["t"] if bloco["Contexto"] else ""
+    ctx_ent = " ".join(c["t"] for c in bloco["Contexto"]) if bloco["Contexto"] else ""
     pin = " ".join(p["t"] for p in bloco["Pensamento Interno"])
-    tex = bloco["Saída"]["Tex"]["S"]
+    tex_items = bloco["Saída"]["Texto"]
     re_sai = bloco["Saída"]["Reação de Saída"][0]["t"] if bloco["Saída"]["Reação de Saída"] else ""
-    ctx_sai = bloco["Saída"]["Contexto de Saída"][0]["t"] if bloco["Saída"]["Contexto de Saída"] else ""
+    ctx_sai = " ".join(c["t"] for c in bloco["Saída"]["Contexto de Saída"]) if bloco["Saída"]["Contexto de Saída"] else ""
 
     print("\n--- Resumo do Bloco ---")
     print(f'Entrada: "{ent}"')
+    print(f'Multivars (Entrada): {bloco.get("Multivars", [])}')
     print(f'Reação: {re_ent} | Contexto: {ctx_ent}')
     print(f'Pensamento Interno: "{pin}"')
-    print("Saída → Falas:")
-    for item in tex:
-        print(f'  {{S:"{item["S"]}", t:"{item["t"]}"}}')
+    print("Saída → Texto (TEX/S):")
+    for item in tex_items:
+        ident = item.get("TEX", item.get("S"))
+        tipo  = "TEX" if "TEX" in item else "S"
+        print(f'  {tipo}={ident} → "{item["t"]}"')
+    print(f'Multivars (Saída): {bloco["Saída"].get("Multivars", [])}')
     print(f'Reação de Saída: {re_sai} | Contexto de Saída: {ctx_sai}')
     print("-----------------------")
 
@@ -318,8 +361,15 @@ def derive_um(idx_mae: str) -> None:
 
     for b in uni_ida["blocos"]:
         aln_ent = {it["E"]: calcular_alnulu(it["t"]) for it in b["Entrada"]}
-        tex_items = b["Saída"]["Tex"]["S"]
-        aln_tex = {it["S"]: calcular_alnulu(it["t"]) for it in tex_items}
+
+        tex_items = b["Saída"]["Texto"]
+        aln_tex = {}
+        for it in tex_items:
+            if "TEX" in it:
+                aln_tex[it["TEX"]] = calcular_alnulu(it["t"])
+            elif "S" in it:
+                aln_tex[it["S"]] = calcular_alnulu(it["t"])
+
         rs_items = b["Saída"]["Reação de Saída"]
         aln_rs  = {it["RS"]: calcular_alnulu(it["t"]) for it in rs_items}
         cs_items = b["Saída"]["Contexto de Saída"]
@@ -332,10 +382,10 @@ def derive_um(idx_mae: str) -> None:
             "bloco_id": b["bloco_id"],
             "Total de Entrada": b["Total de Entrada"],
             "ultimo_child_entrada": b["Total de Entrada"][-1],
-            "Entrada Composta": b.get("Entrada Composta", {}),
+            "Multivars": b.get("Multivars", []),
             "Total de Saída": b["Total de Saída"],
             "ultimo_child_saida": b["Total de Saída"][-1],
-            "Saída Composta": b["Saída"].get("Saída Composta", {}),
+            "Multivars de Saída": b["Saída"].get("Multivars", []),
             "alnulu_por_palavra_entrada": aln_ent,
             "alnulu_total_entrada": total_ent,
             "alnulu_por_palavra_saida": {**aln_tex, **aln_rs, **aln_cs},
