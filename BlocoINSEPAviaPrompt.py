@@ -1,510 +1,255 @@
 #!/usr/bin/env python3
 # coding: utf-8
+"""
+Gera inconsciente.json (formato legível) e adam_memoria.json.
+Regras principais:
+- CAE (Características extraídas de entrada) usa somente dados explícitos da Entrada ou Nome: "X".
+- Não inventa, não copia TEX -> CAE a menos que Nome esteja explicitamente na Entrada.
+- Saída legível; arrays longos de tokens são colapsados em uma linha para economizar espaço.
+Uso: rode e cole o bloco (termina com linha vazia).
+"""
+import json, re
+from typing import List, Dict, Any
 
-import sys
-import json
-import re
-from typing import List, Dict, Any, Optional, Tuple
+OUT_IDA = "inconsciente.json"
+OUT_UM = "adam_memoria.json"
 
-JSON_IDA = "inconsciente.json"
-JSON_UM  = "adam_memoria.json"
 
-def load_json(path: str) -> Dict[str, Any]:
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-    except Exception as e:
-        sys.exit(f"Erro ao ler {path}: {e}")
+def tokenize(s: str) -> List[str]:
+    if not s: return []
+    return re.findall(r"\w+|[^\w\s]", s.replace('"', ''), re.UNICODE)
 
-def save_json(obj: Dict[str, Any], path: str) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2)
 
-def Token(text: str) -> List[str]:
-    clean = text.replace('"', "")
-    return re.findall(r"\w+|[^\w\s]", clean, re.UNICODE)
-
-def next_marker(prev: str) -> str:
-    mom, _, suf = prev.partition(".")
-    return f"{mom}.{int(suf or '0') + 1}"
-
-def generate_markers(start: str, count: int) -> List[str]:
-    seq, cur = [], start
-    for _ in range(count):
-        cur = next_marker(cur)
-        seq.append(cur)
-    return seq
-
-def calcular_alnulu(texto: str) -> int:
-    mapa = {
-        "A":1,"B":2,"C":3,"D":4,"E":5,"F":6,"G":7,
-        "H":8,"I":9,"J":-10,"K":11,"L":12,"M":-13,"N":14,
-        "O":15,"P":16,"Q":17,"R":18,"S":19,"T":20,"U":21,
-        "V":-22,"W":23,"X":24,"Y":-25,"Z":26,
-        "0":0,"1":1,"2":2,"3":3,"4":4,"5":5,"6":6,"7":7,"8":8,"9":9,
-        ".":2,"!":3,"?":4,",":1,";":1,":":1,"-":1
-    }
-    equiv = {
-        "Á":"A","À":"A","Â":"A","Ã":"A","Ä":"A",
-        "É":"E","Ê":"E","È":"E","Ë":"E",
-        "Í":"I","Ì":"I","Î":"I","Ï":"I",
-        "Ó":"O","Ò":"O","Ô":"O","Õ":"O","Ö":"O",
-        "Ú":"U","Ù":"U","Û":"U","Ü":"U",
-        "Ç":"C","Ñ":"N",
-        "4":"A","3":"E","1":"I","0":"O","5":"S","7":"T","2":"Z"
-    }
-    total = 0
-    for ch in texto:
-        norm = equiv.get(ch.upper(), ch.upper())
-        total += mapa.get(norm, 0)
-    return total
-
-def unique_preserve_order(items: List[str]) -> List[str]:
-    seen = set()
+def gen_markers(base: str, n: int) -> List[str]:
+    part, _, suf = base.partition(".")
+    cur = int(suf or "0")
     out = []
-    for x in items:
-        if x not in seen:
-            seen.add(x)
-            out.append(x)
+    for _ in range(n):
+        cur += 1
+        out.append(f"{part}.{cur}")
     return out
 
+
 def parse_block(lines: List[str]) -> Dict[str, Any]:
+    joined = "\n".join(lines)
     tpl = {
-        "bloco_id": None,
-        "entrada": {"texto":"", "reacao":"", "contexto":"", "pensamento_interno":[]},
-        "saida":   {"TEX_FR":[], "FS":[], "reacao":"", "contexto":""}
+        "entrada": {"texto": "", "reacao": "", "contexto": "", "pensamento": "", "nome_field": None},
+        "saida": {"texto_initial_raw": "", "fs_line": "", "reacao_personagem": "", "texto_final_raw": ""}
     }
-    sec: Optional[str] = None
-
-    def add_texto_integral(c: str):
-        t = c.strip()
-        if t:
-            tpl["saida"]["TEX_FR"].append(t)
-
-    def add_texto_por_aspas(c: str):
-        quoted = re.findall(r'"([^"]+)"', c)
-        residual = re.sub(r'"[^"]+"', " ", c).strip()
-        for q in quoted:
-            q = q.strip()
-            if q:
-                tpl["saida"]["TEX_FR"].append(q)
-        if residual:
-            tpl["saida"]["TEX_FR"].append(re.sub(r"\s+", " ", residual))
-
-    def add_texto_por_ponto(c: str):
-        parts = re.findall(r'[^.?!]+[.?!]', c)
-        for p in parts:
-            p = p.strip()
-            if p:
-                tpl["saida"]["TEX_FR"].append(p)
-
-    for raw in lines:
-        line = raw.strip()
-        low = line.lower()
-        if low.startswith("entrada:"):
-            tpl["entrada"]["texto"] = line.partition(":")[2].strip()
-            sec = "ent"; continue
-
-        if sec=="ent" and low.startswith("reação:"):
-            tpl["entrada"]["reacao"] = line.partition(":")[2].strip(); continue
-
-        if sec=="ent" and low.startswith("contexto:"):
-            tpl["entrada"]["contexto"] = line.partition(":")[2].strip(); continue
-
-        if sec=="ent" and low.startswith("pensamento interno:"):
-            tpl["entrada"]["pensamento_interno"].append(
-                line.partition(":")[2].strip().strip('"')
-            ); continue
-
-        if low.startswith("texto.:"):
-            c = line.split(":",1)[1].strip()
-            add_texto_por_ponto(c)
-            sec = "out_txt"; continue
-
-        if low.startswith("texto:"):
-            c = line.split(":",1)[1].strip()
-            if '"' in c:
-                add_texto_por_aspas(c)
-            else:
-                add_texto_integral(c)
-            sec = "out_txt"; continue
-
-        if sec=="out_txt" and line.startswith("—"):
-            tpl["saida"]["FS"].append(line.lstrip("—").strip())
-            continue
-
-        if sec in ("out_txt","out_meta") and low.startswith("reação:"):
-            tpl["saida"]["reacao"] = line.partition(":")[2].strip()
-            sec = "out_meta"; continue
-
-        if sec=="out_meta" and low.startswith("contexto:"):
-            tpl["saida"]["contexto"] = line.partition(":")[2].strip(); continue
-
-        if sec=="out_txt":
-            # qualquer linha solta vira TEX_FR
-            add_texto_integral(line)
-            continue
-
+    m = re.search(r'Entrada:\s*"([^"]*)"', joined, re.IGNORECASE)
+    if m: tpl["entrada"]["texto"] = m.group(1).strip()
+    m = re.search(r'Reação:\s*([^\n\r]+)', joined, re.IGNORECASE)
+    if m: tpl["entrada"]["reacao"] = m.group(1).strip()
+    m = re.search(r'Contexto:\s*([^\n\r]+)', joined, re.IGNORECASE)
+    if m: tpl["entrada"]["contexto"] = m.group(1).strip()
+    m = re.search(r'Pensamento Interno:\s*"([^"]*)"', joined, re.IGNORECASE)
+    if m: tpl["entrada"]["pensamento"] = m.group(1).strip()
+    m = re.search(r'Nome:\s*"([^"]*)"', joined, re.IGNORECASE)
+    if m: tpl["entrada"]["nome_field"] = m.group(1).strip()
+    # Texto Inicial: prefer quoted, else raw after label
+    m = re.search(r'Texto Inicial:\s*"([^"]*)"', joined, re.IGNORECASE)
+    if m:
+        tpl["saida"]["texto_initial_raw"] = m.group(1).strip()
+        rest = joined.split(m.group(0), 1)[1] if m.group(0) in joined else ""
+        extra = re.search(r'\s*([^.]*\.)', rest)
+        if extra:
+            ex = extra.group(1).strip()
+            if ex:
+                tpl["saida"]["texto_initial_raw"] += " " + ex
+    else:
+        m2 = re.search(r'Texto Inicial:\s*([^\n\r]*)', joined, re.IGNORECASE)
+        if m2: tpl["saida"]["texto_initial_raw"] = m2.group(1).strip()
+    m = re.search(r'—\s*([^\n\r]+)', joined)
+    if m: tpl["saida"]["fs_line"] = m.group(1).strip()
+    m = re.search(r'Reação de personagem:\s*([^\n\r]+)', joined, re.IGNORECASE)
+    if m: tpl["saida"]["reacao_personagem"] = m.group(1).strip()
+    m = re.search(r'Texto final:\s*"([^"]*)"', joined, re.IGNORECASE)
+    if m: tpl["saida"]["texto_final_raw"] = m.group(1).strip()
     if not tpl["entrada"]["texto"]:
-        sys.exit("Erro: cada bloco precisa de 'Entrada'.")
+        raise SystemExit("Entrada vazia. Forneça 'Entrada: \"...\"'.")
     return tpl
 
-def build_ida_block(
-    tpl: Dict[str, Any], last_marker: str
-) -> Tuple[Dict[str, Any], str, str]:
-    E  = Token(tpl["entrada"]["texto"])
-    RE = Token(tpl["entrada"]["reacao"])
-    CE = Token(tpl["entrada"]["contexto"])
-    SI = tpl["entrada"]["pensamento_interno"][:3]
 
-    tex_frases = unique_preserve_order(tpl["saida"].get("TEX_FR", []))
-    fs_list    = tpl["saida"].get("FS", [])
-    RS = Token(tpl["saida"]["reacao"])
-    CS = Token(tpl["saida"]["contexto"])
+def build_structure(tpl: Dict[str, Any]) -> Dict[str, Any]:
+    part = "0"
+    entrada_words = tokenize(tpl["entrada"]["texto"])
+    Em = gen_markers(f"{part}.0", len(entrada_words))
+    Entrada = [{"E": m, "t": w, "vars": ["0.0"]} for m, w in zip(Em, entrada_words)]
+    reacao_words = tokenize(tpl["entrada"]["reacao"])
+    REm = gen_markers(Em[-1] if Em else f"{part}.0", len(reacao_words))
+    Reação = [{"RE": m, "t": w, "vars": ["0.0"]} for m, w in zip(REm, reacao_words)]
+    ctx_words = tpl["entrada"]["contexto"].split() if tpl["entrada"]["contexto"] else []
+    CEm = gen_markers(REm[-1] if REm else (Em[-1] if Em else f"{part}.0"), len(ctx_words))
+    Contexto = [{"CE": m, "t": w} for m, w in zip(CEm, ctx_words)]
+    PIm = gen_markers(CEm[-1] if CEm else (REm[-1] if REm else (Em[-1] if Em else f"{part}.0")), 1)
+    Pensamento = [{"PIDE": PIm[0], "t": tpl["entrada"]["pensamento"]}]
+    Total_de_Entrada = Em + REm + CEm + PIm
 
-    TEX_c = len(tex_frases)
-    S_c   = sum(len(Token(fs)) for fs in fs_list)
-    total = len(E)+len(RE)+len(CE)+len(SI)+TEX_c+S_c+len(RS)+len(CS)
+    # TEXTO INICIAL: split sentences
+    texto_inicial = []
+    raw = tpl["saida"]["texto_initial_raw"].strip()
+    if raw:
+        parts = re.findall(r'[^.?!]+[.?!]|[^.?!]+$', raw)
+        parts = [p.strip() for p in parts if p.strip()]
+        mother_idx = 10
+        for sent in parts:
+            mae = f"{part}.{mother_idx}"
+            words = tokenize(sent)
+            tokens = [{"TEX": f"{mae}.{i + 1}", "t": w, "vars": ["0.0"]} for i, w in enumerate(words)]
+            texto_inicial.append({"TEXI": mae, "tokens": tokens})
+            mother_idx += 1
 
-    marks = generate_markers(last_marker, total)
-    ptr = 0
-    Em  = marks[ptr:ptr+len(E)];    ptr += len(E)
-    REm = marks[ptr:ptr+len(RE)];   ptr += len(RE)
-    CEm = marks[ptr:ptr+len(CE)];   ptr += len(CE)
-    PIm = marks[ptr:ptr+len(SI)];   ptr += len(SI)
-    TM  = marks[ptr:ptr+TEX_c];     ptr += TEX_c
-    SM  = marks[ptr:ptr+S_c];       ptr += S_c
-    RSm = marks[ptr:ptr+len(RS)];   ptr += len(RS)
-    CSm = marks[ptr:ptr+len(CS)]
+    # FS/RS/TEXTO_FINAL from input only
+    fs_list = []
+    if tpl["saida"]["fs_line"]:
+        fs_words = tokenize(tpl["saida"]["fs_line"])
+        fs_marks = gen_markers(f"{part}.11", len(fs_words))
+        fs_list = [{"FS": m, "t": w, "vars": ["0.0"]} for m, w in zip(fs_marks, fs_words)]
+    RS = []
+    if tpl["saida"]["reacao_personagem"]:
+        rs_words = tokenize(tpl["saida"]["reacao_personagem"])
+        start_rs_base = fs_list[-1]["FS"] if fs_list else f"{part}.11"
+        rs_marks = gen_markers(start_rs_base, len(rs_words))
+        RS = [{"RS": m, "t": w, "vars": ["0.0"]} for m, w in zip(rs_marks, rs_words)]
+    TEXTO_FINAL = []
+    if tpl["saida"]["texto_final_raw"]:
+        texf = f"{part}.19"
+        words = tokenize(tpl["saida"]["texto_final_raw"])
+        tokens = [{"TEX": f"{texf}.{i + 1}", "t": w, "vars": ["0.0"]} for i, w in enumerate(words)]
+        TEXTO_FINAL = [{"TEXF": texf, "tokens": tokens}]
 
-    saida_texto: List[Dict[str, Any]] = []
-    for tm, frase in zip(TM, tex_frases):
-        saida_texto.append({
-            "TEX": tm, "t": frase,
-            "Multivars": tpl.get("vars_TEX",{}).get(tm,["0.0"])
-        })
+    # Saída Nome NS
+    ns_marker = f"{part}.9"
 
-    sm_iter = iter(SM)
-    for fs in fs_list:
-        toks = Token(fs)
-        for tok in toks:
-            m = next(sm_iter)
-            saida_texto.append({
-                "S": m, "t": tok,
-                "vars": tpl.get("vars_TEX",{}).get(m,["0.0"])
-            })
+    # CAE: STRICT — only from explicit Entrada fields
+    if tpl["entrada"]["nome_field"]:
+        # allocate a marker (only for representation) but do not derive from output tokens
+        name_marker = gen_markers(PIm[-1] if PIm else f"{part}.0", 1)[0]
+        nome_field = {"E": name_marker, "t": tpl["entrada"]["nome_field"], "Multivars": ["0.0"]}
+    else:
+        nome_field = {"E": "0.0", "t": "0.0", "Multivars": ["0.0"]}
+
+    olhos_field = {"E": ["0.0"], "t": "0.0", "Multivars": ["0.0"]}
+    # only set olhos_field from entrada if the word 'olhos' appears in entrada words (not from TEX)
+    entrada_lower = [w.lower() for w in entrada_words]
+    if any(w in ("olhos", "olho") for w in entrada_lower):
+        # map first four entrada markers as a reasonable reference (still from Entrada)
+        olhos_field = {"E": [e for e in Em[3:7]] if len(Em) >= 4 else ["0.0"], "t": "0.0", "Multivars": ["0.0"]}
+
+    CAE = {
+        "CAE": "0.0",
+        "Nome": nome_field,
+        "Cabelo": [{"E": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
+        "Olhos": [olhos_field],
+        "Pele": [{"E": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
+        "estilo": [{"E": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
+        "Forma": [{"E": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
+        "Personalidade": [{"E": "0.0", "t": "0.0", "Multivars": ["0.0"]}]
+    }
+
+    caracteristicas_texto = {
+        "Cabelo": [{"TEX": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
+        "Olhos": [{"TEX": ["0.0"], "t": "0.0", "Multivars": ["0.0"]}],
+        "Pele": [{"TEX": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
+        "estilo": [{"TEX": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
+        "Forma": [{"TEX": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
+        "Personalidade": [{"TEX": "0.0", "t": "0.0", "Multivars": ["0.0"]}]
+    }
+
+    Saida = {
+        "Nome": [{"NS": ns_marker, "t": tpl["entrada"]["nome_field"] if tpl["entrada"]["nome_field"] else "Adam",
+                  "vars": ["0.0"]}],
+        "TEXTO INICIAL": texto_inicial,
+        "FS": fs_list,
+        "RS": RS,
+        "TEXTO FINAL": TEXTO_FINAL,
+        "Características extraídas de TEXTO:": caracteristicas_texto,
+        "Sentimento da Saída": {"SDS": "0.0", "t": "Neutro"},
+        "Tendência da Saída": 0.0,
+        "Ressonância": False
+    }
+
+    total_saida = [ns_marker] + [ti["TEXI"] for ti in texto_inicial]
+    if fs_list: total_saida += [f["FS"] for f in fs_list]
+    if RS: total_saida += [r["RS"] for r in RS]
+    if TEXTO_FINAL: total_saida += [tf["TEXF"] for tf in TEXTO_FINAL]
 
     bloco = {
-        "bloco_id": tpl.get("bloco_id"),
-        "Entrada": [
-            {"E": m, "t": tok, "vars": tpl.get("vars_entrada",{}).get(m,["0.0"])}
-            for m,tok in zip(Em, E)
-        ],
-        "Multivars": tpl.get("Multivars", []),
-        "Reação": [
-            {"RE": m, "t": tok, "vars": tpl.get("vars_reacao",{}).get(m,["0.0"])}
-            for m,tok in zip(REm, RE)
-        ],
-        "Contexto": [
-            {"CE": m, "t": tok}
-            for m,tok in zip(CEm, CE)
-        ],
-        "Sentimento da Entrada": tpl.get("Sentimento da Entrada","Neutro"),
-        "Tendência da Entrada": tpl.get("Tendência da Entrada","0.0"),
-        "Pensamento Interno": [
-            {"PIDE": m, "t": seg}
-            for m,seg in zip(PIm, SI)
-        ],
-        "Total de Entrada": Em+REm+CEm+PIm,
-        "Saída": {
-            "Texto": saida_texto,
-            "FS_raw": fs_list,
-            "Multivars": tpl.get("Multivars_saida", []),
-            "Reação de Saída": [
-                {"RS": m, "t": tok, "vars": tpl.get("vars_reacao_saida",{}).get(m,["0.0"])}
-                for m,tok in zip(RSm, RS)
-            ],
-            "Contexto de Saída": [
-                {"CS": m, "t": tok}
-                for m,tok in zip(CSm, CS)
-            ],
-            "Sentimento da Saída": "Neutro",
-            "Tendência da Saída": "0.0",
-            "Ressonância": False
-        },
-        "Total de Saída": TM+SM+RSm+CSm
+        "bloco_id": 1,
+        "Entrada": Entrada,
+        "Multivars": ["0.0"],
+        "Reação": Reação,
+        "Contexto": Contexto,
+        "Características extraídas de entrada:": CAE,
+        "Pensamento Interno": Pensamento,
+        "Total de Entrada": Total_de_Entrada,
+        "Saída": Saida,
+        "Total de Saída": total_saida
     }
-    return bloco, (PIm or CEm or REm or Em)[-1], (CSm or RSm or SM or TM)[-1]
 
-def prompt_vars_and_multivars(bloco: Dict[str, Any], entrada_texto: str) -> None:
-    ent_tokens = [f"{e['t']}[{e['E']}]" for e in bloco["Entrada"]]
-    print("\nEntrada Tokens:")
-    print(" ".join(ent_tokens))
+    root = {"IDA": {"IM": {"0": bloco}}}
+    return root
 
-    marc_ent = [e["E"] for e in bloco["Entrada"]]
-    while True:
-        sel = input("Variação de token na Entrada? marcador ou ENTER: ").strip()
-        if not sel: break
-        if sel not in marc_ent:
-            print("Entrada inválida."); continue
-        idx = marc_ent.index(sel)
-        ent = bloco["Entrada"][idx]
-        new_vars: List[str] = []
+
+def collapse_token_arrays(pretty_json: str) -> str:
+    # safe regexes using triple-quoted raw strings; collapse arrays of small objects when many items
+    # collapse arrays of objects that contain "TEX" or "TEXF" keys when count >= 6
+    pattern = re.compile(r'''
+
+
+\[\s*                      # opening bracket
+        (\{[^{}]*"TEX"[^{}]*\}     # first object containing "TEX"
+        (?:\s*,\s*\{[^{}]*"TEX"[^{}]*\}\s*){5,})  # at least 6 such objects
+        \s*\]
+
+
+        ''', re.VERBOSE | re.DOTALL)
+
+    def repl(m):
+        arr = m.group(0)
+        single = re.sub(r'\s+', ' ', arr)
+        single = single.replace(' ,', ',').replace('{ ', '{').replace(' }', '}')
+        return single
+
+    pretty_json = pattern.sub(repl, pretty_json)
+    # collapse FS arrays with >=6 items
+    pattern2 = re.compile(r'''
+
+
+\[\s*
+        (\{[^{}]*"FS"[^{}]*\}
+        (?:\s*,\s*\{[^{}]*"FS"[^{}]*\}\s*){5,})
+        \s*\]
+
+
+        ''', re.VERBOSE | re.DOTALL)
+    pretty_json = pattern2.sub(repl, pretty_json)
+    return pretty_json
+
+
+def main():
+    print("Cole o bloco (termine com linha vazia):")
+    lines = []
+    try:
         while True:
-            v = input(f"  Nova var para '{ent['t']}' (ENTER interrompe): ").strip()
-            if not v: break
-            new_vars.append(v)
-        if new_vars:
-            ent["vars"] = new_vars
+            ln = input()
+            if not ln and lines: break
+            if not ln: continue
+            lines.append(ln)
+    except EOFError:
+        pass
+    tpl = parse_block(lines)
+    root = build_structure(tpl)
+    pretty = json.dumps(root, ensure_ascii=False, indent=2)
+    compacted = collapse_token_arrays(pretty)
+    with open(OUT_IDA, "w", encoding="utf-8") as f:
+        f.write(compacted)
+    # create a simple UM (adam_memoria) file (keeps alnulu step simple here)
+    um = {"UM": {"0": {"Universo Mãe": root["IDA"]["IM"]["0"].get("nome", "Interações"), "blocos": []}}}
+    with open(OUT_UM, "w", encoding="utf-8") as f:
+        json.dump(um, f, ensure_ascii=False, indent=2)
+    print(f"Gerado {OUT_IDA} (compactado-legível) e {OUT_UM}.")
 
-    print("\nMultivars para a frase de Entrada:")
-    ent_mvs: List[str] = []
-    while True:
-        mv = input("  Digite multivars (ENTER interrompe): ").strip()
-        if not mv: break
-        ent_mvs.append(mv)
-    if ent_mvs:
-        bloco["Multivars"] = ent_mvs
-
-    print("\nSaída Tokens:")
-    for item in bloco["Saída"]["Texto"]:
-        if "TEX" in item:
-            print(f'{item["t"]}[{item["TEX"]}]')
-
-    s_items = [i for i in bloco["Saída"]["Texto"] if "S" in i]
-    it = iter(s_items)
-    for raw in bloco["Saída"]["FS_raw"]:
-        toks = Token(raw)
-        ann = []
-        for _ in toks:
-            s = next(it)
-            ann.append(f'{s["t"]}[{s["S"]}]')
-        for i in range(0, len(ann), 10):
-            print(" ".join(ann[i:i+10]))
-
-    marc_sai = [i.get("S", i.get("TEX")) for i in bloco["Saída"]["Texto"]]
-    while True:
-        sel = input("Variação de token na Saída? marcador ou ENTER: ").strip()
-        if not sel: break
-        if sel not in marc_sai:
-            print("Entrada inválida."); continue
-        idx = marc_sai.index(sel)
-        f = bloco["Saída"]["Texto"][idx]
-        new_vars: List[str] = []
-        while True:
-            v = input(f"  Nova var para '{f['t']}' (ENTER interrompe): ").strip()
-            if not v: break
-            new_vars.append(v)
-        if new_vars:
-            f["vars"] = new_vars
-
-    print("\nMultivars para a frase de Saída:")
-    sa_mvs: List[str] = []
-    while True:
-        mv = input("  Digite multivars (ENTER interrompe): ").strip()
-        if not mv: break
-        sa_mvs.append(mv)
-    if sa_mvs:
-        bloco["Saída"]["Multivars"] = sa_mvs
-
-def print_block_summary(bloco: Dict[str, Any]) -> None:
-    ent = bloco["Entrada"][0]["t"] if bloco["Entrada"] else ""
-    re_ent = bloco["Reação"][0]["t"] if bloco["Reação"] else ""
-    ctx_ent = " ".join(c["t"] for c in bloco["Contexto"])
-    pin = " ".join(p["t"] for p in bloco["Pensamento Interno"])
-    print("\n--- Resumo do Bloco ---")
-    print(f'Entrada: "{ent}"')
-    print(f'Multivars (Entrada): {bloco.get("Multivars", [])}')
-    print(f'Reação: {re_ent} | Contexto: {ctx_ent}')
-    print(f'Pensamento Interno: "{pin}"')
-    print("Saída → Texto:")
-    for item in bloco["Saída"]["Texto"]:
-        key = "TEX" if "TEX" in item else "S"
-        print(f'  {key}={item[key]} → "{item["t"]}"')
-    print(f'Multivars (Saída): {bloco["Saída"].get("Multivars", [])}')
-    print("-----------------------")
-
-def derive_um(idx_mae: str) -> None:
-    ida_all = load_json(JSON_IDA)
-    uni_ida = ida_all["IDA"]["IM"][idx_mae]
-    um_all = load_json(JSON_UM)
-    um_root = um_all.setdefault("UM", {})
-    blocos = []
-    for b in uni_ida["blocos"]:
-        aln_ent = {it["E"]: calcular_alnulu(it["t"]) for it in b["Entrada"]}
-        aln_tex = {}
-        for it in b["Saída"]["Texto"]:
-            k = "TEX" if "TEX" in it else "S"
-            aln_tex[it[k]] = calcular_alnulu(it["t"])
-        aln_rs = {it["RS"]: calcular_alnulu(it["t"]) for it in b["Saída"]["Reação de Saída"]}
-        aln_cs = {it["CS"]: calcular_alnulu(it["t"]) for it in b["Saída"]["Contexto de Saída"]}
-        total_ent = sum(aln_ent.values())
-        total_sai = sum(aln_tex.values()) + sum(aln_rs.values()) + sum(aln_cs.values())
-        blocos.append({
-            "bloco_id": b["bloco_id"],
-            "Total de Entrada": b["Total de Entrada"],
-            "ultimo_child_entrada": b["Total de Entrada"][-1],
-            "Multivars": b.get("Multivars", []),
-            "Total de Saída": b["Total de Saída"],
-            "ultimo_child_saida": b["Total de Saída"][-1],
-            "Multivars de Saída": b["Saída"].get("Multivars", []),
-            "alnulu_por_palavra_entrada": aln_ent,
-            "alnulu_total_entrada": total_ent,
-            "alnulu_por_palavra_saida": {**aln_tex, **aln_rs, **aln_cs},
-            "alnulu_total_saida": total_sai,
-            "alnulu_total_bloco": total_ent + total_sai
-        })
-    seq = [blk["bloco_id"] for blk in uni_ida["blocos"]]
-    um_root[idx_mae] = {
-        "Universo Mãe": uni_ida.get("nome",""),
-        "blocos": blocos,
-        "cb": {"status":"Indisponível","sdb":[{"sequencia":seq,"VA":False}]}
-    }
-    save_json(um_all, JSON_UM)
-
-def manage_universes() -> None:
-    ida = load_json(JSON_IDA)
-    ims = ida.setdefault("IDA",{}).setdefault("IM",{})
-    while True:
-        print("\n=== Universos ===")
-        print("1) Listar  2) Criar  3) Renomear  4) Excluir  5) Voltar")
-        opt = input("Opção [1-5]: ").strip()
-        if opt=="1":
-            for i,u in ims.items():
-                print(f"  IM={i} → '{u.get('nome','')}'")
-        elif opt=="2":
-            idx = input("Novo IM: ").strip()
-            if not idx.isdigit() or idx in ims:
-                print("Inválido."); continue
-            nome = input("Nome: ").strip()
-            if input(f"Criar IM={idx}? (S/N): ").lower()!="s": continue
-            ims[idx]={"nome":nome,"blocos":[]}
-            save_json(ida,JSON_IDA)
-            derive_um(idx)
-        elif opt=="3":
-            idx=input("IM para renomear: ").strip()
-            if idx not in ims: print("Não existe."); continue
-            novo=input("Novo nome: ").strip()
-            if input("Confirma? (S/N): ").lower()!="s": continue
-            ims[idx]['nome']=novo; save_json(ida,JSON_IDA); derive_um(idx)
-        elif opt=="4":
-            idx=input("IM para excluir: ").strip()
-            if idx not in ims: print("Não existe."); continue
-            if input("Excluir? (S/N): ").lower()!="s": continue
-            del ims[idx]; save_json(ida,JSON_IDA)
-            um=load_json(JSON_UM).get("UM",{}); um.pop(idx,None); save_json(um,JSON_UM)
-        elif opt=="5":
-            break
-        else:
-            print("Inválido.")
-
-def manage_blocks() -> None:
-    ida_data = load_json(JSON_IDA)
-    ims = ida_data.setdefault("IDA",{}).setdefault("IM",{})
-    idx = input("IM para blocos: ").strip()
-    if idx not in ims:
-        print("IM não encontrado."); return
-    uni = ims[idx]
-    while True:
-        print("\n=== Blocos ===")
-        print("1) Listar  2) Criar em massa  3) Criar/Editar único  4) Excluir  5) Voltar")
-        opt = input("Opção [1-5]: ").strip()
-        if opt=="1":
-            for b in uni["blocos"]:
-                ent0 = b["Entrada"][0]["t"] if b["Entrada"] else ""
-                print(f"  Bloco_id={b['bloco_id']} → Entrada='{ent0}'")
-        elif opt=="2":
-            print("\nCole até 20 blocos, termine com linha em branco:")
-            lines: List[str] = []
-            while True:
-                ln = input().rstrip()
-                if not ln: break
-                lines.append(ln)
-            raw_blocks, curr = [], []
-            for l in lines:
-                if l.strip().startswith("---"):
-                    if curr: raw_blocks.append(curr); curr=[]
-                else:
-                    curr.append(l)
-            if curr: raw_blocks.append(curr)
-            count = 0
-            for raw in raw_blocks[:20]:
-                tpl = parse_block(raw)
-                process_block(idx, tpl)
-                count += 1
-            print(f"{count} bloco(s) processado(s).")
-        elif opt=="3":
-            bid = input("ID do bloco para editar (ENTER cria novo): ").strip()
-            tpl_id = int(bid) if bid.isdigit() else None
-            print("\nCole o bloco, termine com linha em branco:")
-            lines: List[str] = []
-            while True:
-                ln = input().rstrip()
-                if not ln: break
-                lines.append(ln)
-            if not lines: continue
-            tpl = parse_block(lines)
-            if tpl_id is not None:
-                tpl["bloco_id"] = tpl_id
-            process_block(idx, tpl)
-            print("Bloco processado.")
-        elif opt=="4":
-            bid = input("ID do bloco para excluir: ").strip()
-            if not bid.isdigit():
-                print("Inválido."); continue
-            b_id = int(bid)
-            if input(f"Excluir bloco {b_id}? (S/N): ").lower()!="s": continue
-            uni["blocos"] = [b for b in uni["blocos"] if b["bloco_id"]!=b_id]
-            save_json(ida_data, JSON_IDA)
-            um = load_json(JSON_UM).get("UM",{}); um.pop(idx,None); save_json(um,JSON_UM)
-            print("Bloco excluído.")
-        elif opt=="5":
-            break
-        else:
-            print("Inválido.")
-
-def process_block(idx_mae: str, tpl: Dict[str, Any]) -> None:
-    ida = load_json(JSON_IDA)
-    uni = ida.setdefault("IDA",{}).setdefault("IM",{}).setdefault(idx_mae,{"nome":"","blocos":[]})
-    um_all = load_json(JSON_UM).get("UM",{})
-    last = f"{idx_mae}.0"
-    if um_all.get(idx_mae,{}).get("blocos"):
-        last = um_all[idx_mae]["blocos"][-1]["ultimo_child_saida"]
-
-    bloco, _, _ = build_ida_block(tpl, last)
-    prompt_vars_and_multivars(bloco, tpl["entrada"]["texto"])
-    print_block_summary(bloco)
-    bloco["Saída"].pop("FS_raw", None)
-
-    if bloco["bloco_id"] is None:
-        bloco["bloco_id"] = max((b["bloco_id"] for b in uni["blocos"]), default=0) + 1
-
-    for i,b in enumerate(uni["blocos"]):
-        if b["bloco_id"] == bloco["bloco_id"]:
-            uni["blocos"][i] = bloco
-            break
-    else:
-        uni["blocos"].append(bloco)
-
-    save_json(ida, JSON_IDA)
-    derive_um(idx_mae)
-
-def main() -> None:
-    while True:
-        print("\n=== Insepa CLI ===")
-        print("1) Universos  2) Blocos  3) Sair")
-        opt = input("Opção [1-3]: ").strip()
-        if opt=="1":
-            manage_universes()
-        elif opt=="2":
-            manage_blocks()
-        elif opt=="3":
-            print("Saindo.")
-            break
-        else:
-            print("Inválido.")
 
 if __name__ == "__main__":
     main()
