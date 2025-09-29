@@ -46,14 +46,17 @@ def tokenize(s: str):
         return []
     # Mantém sequências entre colchetes como um único token (ex.: [Nome do user])
     # Emoji/smileys comuns como um único token (^^, <3, :), :-), :D, ;), :P, etc.)
+    # Palavras hifenizadas e com apóstrofo (vê-la, recebê-la, D') como um token
     # Depois divide em palavras e pontuação
     pattern = (
-        r"\[[^\]]+\]"                  # marcadores entre colchetes
-        r"|<3"                             # coração
-        r"|[:;][\-]?[)D(\[PpOo/\\]"   # smileys básicos :), :-), :D, :(, ;), :P, :o, :/ 
-        r"|\^{2,}"                        # sequências de carets: ^^, ^^^
-        r"|\w+"                           # palavras/dígitos/underscore
-        r"|[^\w\s]"                       # qualquer pontuação isolada
+        r"\[[^\]]+\]"                        # marcadores entre colchetes
+        r"|<3"                                   # coração
+        r"|[:;][\-]?[)D(\[PpOo/\\]"       # smileys básicos :), :-), :D, :(, ;), :P, :o, :/
+        r"|\^{2,}"                              # sequências de carets: ^^, ^^^
+        r"|[A-Za-zÀ-ÖØ-öø-ÿ]+(?:-[A-Za-zÀ-ÖØ-öø-ÿ]+)+"  # hifenizados: vê-la, recebe-la
+        r"|[A-Za-zÀ-ÖØ-öø-ÿ]+['’]"                     # apóstrofo ao final: D'
+        r"|[A-Za-zÀ-ÖØ-öø-ÿ0-9_]+"                     # palavras/dígitos/underscore (com acentos)
+        r"|[^\w\s]"                                 # qualquer pontuação isolada
     )
     return re.findall(pattern, s.replace('"',''), re.UNICODE)
 
@@ -89,7 +92,22 @@ def parse_block(lines):
         contexto_entrada = m_ctx_in.group(1).strip()
         entrada_block = entrada_block.replace(m_ctx_in.group(0), "").strip()
 
-    # Linhas de Entrada e falas (— ...)
+    # Pensamento Interno (conteúdo entre aspas após rótulo) + linhas subsequentes até 'Saída:'
+    m_pens = re.search(r'(?is)Pensamento\s*interno\s*:\s*"([\s\S]*?)"', txt)
+    pensamento = ""
+    if m_pens:
+        pensamento = m_pens.group(1).strip()
+        # tudo após o fechamento das aspas até 'Saída:' também pertence ao pensamento
+        start_after = m_pens.end()
+        m_saida_hdr = re.search(r'(?ims)^\s*Saída\s*:', txt)
+        end_before = m_saida_hdr.start() if m_saida_hdr else len(txt)
+        extra_thought = txt[start_after:end_before].strip()
+        if extra_thought:
+            pensamento = (pensamento + " " + extra_thought).strip()
+        # remover do bloco de entrada qualquer trecho a partir de 'Pensamento interno:'
+        entrada_block = re.sub(r'(?is)Pensamento\s*interno\s*:\s*"[\s\S]*?"[\s\S]*\Z', '', entrada_block).strip()
+
+    # Linhas de Entrada e falas (— ...), agora sem o pensamento
     linhas_ent = [ln.rstrip() for ln in entrada_block.splitlines() if ln.strip()]
     idxs_fala_ent = [i for i, ln in enumerate(linhas_ent) if re.match(r'^\s*—', ln)]
     falas_entrada = [linhas_ent[i] for i in idxs_fala_ent]
@@ -105,10 +123,6 @@ def parse_block(lines):
     else:
         entrada_texto = " ".join(linhas_ent).strip()
         tefie_texto = ""
-
-    # Pensamento Interno (conteúdo entre aspas após rótulo)
-    m_pens = re.search(r'(?is)Pensamento\s*interno\s*:\s*"([\s\S]*?)"', txt)
-    pensamento = m_pens.group(1).strip() if m_pens else ""
 
     # -------- Saída (após 'Saída:') --------
     m_saida = re.search(r'(?ims)^\s*Saída\s*:\s*([\s\S]*?)\Z', txt)
@@ -192,7 +206,7 @@ def build_render(tpl):
                 return ('CAS', 'Nome')
         return None
 
-    # Gerencia sequência linear de marcadores 0.1, 0.2, ...
+    # Gerencia sequência linear de marcadores 0.1, 0.2, ... e estados de spans
     cur = 0
     def next_marks(n):
         nonlocal cur
@@ -200,33 +214,95 @@ def build_render(tpl):
         cur += n
         return marks
 
-    # Helper: aplica rótulos como estado ativo até próximo marcador ou fim de sentença
+    # Estados para spans (Entrada)
+    cae_active = {}          # canonical -> {display, start}
+    cae_pending_open = set() # canonical aguardando primeiro token para start
+    cae_display = {}         # canonical -> display (primeira forma vista)
+    cae_spans = []           # {label, inicio, fim}
+    last_mark_in = None
+
+    # Estados para spans (Saída)
+    cas_active = {}
+    cas_pending_open = set()
+    cas_display = {}
+    cas_spans = []
+    last_mark_out = None
+
+    # Helper: aplica rótulos por FAIXA entre marcadores pareados [CAE:X] ... [CAE:X]
     def emit_tokens(words, keyname: str, saida_flag: bool):
         out = []
-        active_cae = []  # lista de rótulos CAE ativos
-        active_cas = []  # lista de rótulos CAS ativos
+        # Active sets são globais por seção para manter spans contínuos
+        nonlocal cae_active, cae_pending_open, cae_display, cae_spans, last_mark_in
+        nonlocal cas_active, cas_pending_open, cas_display, cas_spans, last_mark_out
+        active_cae_keys = set(cae_active.keys())
+        active_cas_keys = set(cas_active.keys())
         for w in words:
             campo = detect_campo(w, saida=saida_flag)
             if campo:
                 kind, label = campo
-                if kind == 'CAE':
-                    active_cae = [label]
-                elif kind == 'CAS':
-                    active_cas = [label]
+                canonical = label.casefold()
+                display = cae_display.get(canonical) if not saida_flag else cas_display.get(canonical)
+                if not display:
+                    if saida_flag:
+                        cas_display[canonical] = label
+                    else:
+                        cae_display[canonical] = label
+                    display = label
+                # alterna (abre/fecha) a faixa daquele label por seção
+                if kind == 'CAE' and not saida_flag:
+                    if canonical in cae_active:
+                        # fechar: fim é o último mark de entrada
+                        if last_mark_in is not None:
+                            cae_spans.append({"label": cae_active[canonical]["display"], "inicio": cae_active[canonical]["start"], "fim": last_mark_in})
+                        cae_active.pop(canonical, None)
+                        if canonical in cae_pending_open:
+                            cae_pending_open.remove(canonical)
+                    else:
+                        # abrir: marca como pendente até o próximo token textual
+                        cae_pending_open.add(canonical)
+                elif kind == 'CAS' and saida_flag:
+                    if canonical in cas_active:
+                        if last_mark_out is not None:
+                            cas_spans.append({"label": cas_active[canonical]["display"], "inicio": cas_active[canonical]["start"], "fim": last_mark_out})
+                        cas_active.pop(canonical, None)
+                        if canonical in cas_pending_open:
+                            cas_pending_open.remove(canonical)
+                    else:
+                        cas_pending_open.add(canonical)
                 continue  # não emite token para marcador
             # token textual real
             m = next_marks(1)[0]
             item = {keyname: m, "t": w, "vars": ["0.0"]}
-            # aplica rótulos ativos do contexto adequado
-            if not saida_flag and active_cae:
-                item.setdefault('cae', []).extend(active_cae)
-            if saida_flag and active_cas:
-                item.setdefault('cas', []).extend(active_cas)
+            # abrir spans pendentes nesta posição
+            if not saida_flag and cae_pending_open:
+                for canon in list(cae_pending_open):
+                    cae_active[canon] = {"display": cae_display[canon], "start": m}
+                    cae_pending_open.remove(canon)
+            if saida_flag and cas_pending_open:
+                for canon in list(cas_pending_open):
+                    cas_active[canon] = {"display": cas_display[canon], "start": m}
+                    cas_pending_open.remove(canon)
+            # aplica rótulos ativos do contexto adequado (dedup por canonical)
+            if not saida_flag and cae_active:
+                labels = []
+                for canon in sorted(cae_active.keys()):
+                    disp = cae_display.get(canon, cae_active[canon]["display"])
+                    labels.append(disp)
+                if labels:
+                    item['cae'] = labels
+            if saida_flag and cas_active:
+                labels = []
+                for canon in sorted(cas_active.keys()):
+                    disp = cas_display.get(canon, cas_active[canon]["display"])
+                    labels.append(disp)
+                if labels:
+                    item['cas'] = labels
             out.append(item)
-            # Se for fim de sentença, limpar rótulos ativos
-            if w in ['.', '!', '?']:
-                active_cae = []
-                active_cas = []
+            # atualizar último marker por seção
+            if saida_flag:
+                last_mark_out = m
+            else:
+                last_mark_in = m
         return out
 
     # Entrada
@@ -260,19 +336,22 @@ def build_render(tpl):
     PIDE_list = []
     pensamentos = tpl["entrada"].get("pensamento", "") or ""
     if pensamentos:
-        parts = re.findall(r'[^.?!]+[.?!]|[^.?!]+$', pensamentos)
-        for raw in [p for p in parts if p.strip()]:
-            tokens = tokenize(raw)
+        # normalizações: remover quebras de linha e aspas residuais
+        pensamentos_norm = re.sub(r'[\r\n]+', ' ', pensamentos)
+        pensamentos_norm = re.sub(r'["“”]+', '', pensamentos_norm)
+        # remover marcadores [CAE:/CAS:] do texto do pensamento
+        pensamentos_clean = re.sub(r'(?is)\[\s*(?:cae|cas)\s*:\s*[^\]]+\]', '', pensamentos_norm)
+        # dividir em sentenças preservando pontuação
+        parts = re.findall(r'[^.?!]+[.?!]|[^.?!]+$', pensamentos_clean)
+        for raw in [p.strip() for p in parts if p.strip()]:
+            # normalizar espaços antes de pontuação
+            clean_text = re.sub(r'\s+([,.;:!?])', r'\1', raw).strip()
+            # extrair labels CAE presentes (do texto original com marcadores), por sentença
             cae_labels = []
-            clean_tokens = []
-            for tok in tokens:
-                lab = detect_campo(tok, saida=False)
-                if lab and lab[0] == 'CAE':
-                    if lab[1] not in cae_labels:
-                        cae_labels.append(lab[1])
-                    continue
-                clean_tokens.append(tok)
-            clean_text = " ".join(clean_tokens).strip()
+            for m in re.finditer(r'(?is)\[\s*cae\s*:\s*([^\]]+)\]', pensamentos_norm):
+                label = re.sub(r'[\s\.;:,]+$', '', m.group(1).strip())
+                if label and label not in cae_labels:
+                    cae_labels.append(label)
             mark = next_marks(1)[0]
             item = {"PIDE": mark, "t": clean_text}
             if cae_labels:
@@ -338,6 +417,14 @@ def build_render(tpl):
     ]
     alnulu_total_bloco = calcular_alnulu(" ".join([s for s in alnulu_src if s]))
 
+    # Fechar spans que ficaram abertos até o final
+    for canon, info in list(cae_active.items()):
+        if last_mark_in is not None:
+            cae_spans.append({"label": info["display"], "inicio": info["start"], "fim": last_mark_in})
+    for canon, info in list(cas_active.items()):
+        if last_mark_out is not None:
+            cas_spans.append({"label": info["display"], "inicio": info["start"], "fim": last_mark_out})
+
     ida = {
         "IDA": {
             "IM": {
@@ -350,8 +437,9 @@ def build_render(tpl):
                                 "Texto Inicial DE ENTRADA": TEXE_list,
                                 "Fala DE ENTRADA": FADEN_list,
                                 "Reação": RE_list,
-                                "Contexto": CE_in_list,
                                 "Texto Final de Entrada": TEFIE_list,
+                                "Contexto": CE_in_list,
+                                "Sentimento de Entrada": {"SDE": "0.0", "t": "Neutro", "Tendência de Entrada": 0.0},
                             },
                             "Pensamento Interno": PIDE_list,
                             "Total de Entrada": Total_de_Entrada,
@@ -359,11 +447,10 @@ def build_render(tpl):
                                 "Texto Inicial de SAÍDA": TEXIS_list,
                                 "Fala de Saída": FS_list,
                                 "Reação de Saída": RS_list,
-                                "Contexto de Saída": CE_out_list,
                                 "Texto Final de Saída": TEXFS_list,
+                                "Contexto de Saída": CE_out_list,
                             },
-                            "Sentimento da Saída": {"SDS": "0.0", "t": "Neutro", "Tendência da Saída": 0.0},
-                            "Ressonância": False,
+                            "Sentimento da Saída": {"SDS": "0.0", "t": "Neutro", "Tendência da Saída": 0.0, "Ressonância": False},
                             "Total de Saída": Total_de_Saida,
                         }
                     ],
@@ -372,6 +459,70 @@ def build_render(tpl):
         }
     }
 
+    # Construir características para UM (adam_memoria)
+    # Mapear markers -> (texto, secao)
+    entrada_index = []  # (mark, t, secao)
+    for tkn in TEXE_list:
+        entrada_index.append((tkn["TEXE"], tkn["t"], "Texto de Entrada Inicial"))
+    for tkn in FADEN_list:
+        entrada_index.append((tkn["FADEN"], tkn["t"], "Fala de Entrada"))
+    for tkn in RE_list:
+        entrada_index.append((tkn["RE"], tkn["t"], "Reação"))
+    for tkn in CE_in_list:
+        entrada_index.append((tkn["CE"], tkn["t"], "Contexto"))
+    for tkn in TEFIE_list:
+        entrada_index.append((tkn["TEFIE"], tkn["t"], "Texto Final de Entrada"))
+
+    saida_index = []
+    for tkn in TEXIS_list:
+        saida_index.append((tkn["TEXIS"], tkn["t"], "Texto Inicial de Saída"))
+    for tkn in FS_list:
+        saida_index.append((tkn["FS"], tkn["t"], "Fala de Saída"))
+    for tkn in RS_list:
+        saida_index.append((tkn["RS"], tkn["t"], "Reação de Saída"))
+    for tkn in CE_out_list:
+        saida_index.append((tkn["CE"], tkn["t"], "Contexto de Saída"))
+    for tkn in TEXFS_list:
+        saida_index.append((tkn["TEXFS"], tkn["t"], "Texto Final de Saída"))
+
+    def materializar_span(sp, index_list):
+        inicio = sp["inicio"]; fim = sp["fim"]
+        texts = []
+        fonte = None
+        on = False
+        for mark, tt, sec in index_list:
+            if mark == inicio:
+                on = True
+                fonte = sec
+            if on:
+                texts.append(tt)
+            if mark == fim:
+                break
+        joined = " ".join(texts).strip()
+        # Normalizar espaços antes de pontuação
+        joined = re.sub(r"\s+([,.;:!?])", r"\1", joined)
+        return fonte, joined
+
+    caracteristicas_entrada = []
+    for sp in cae_spans:
+        fonte, toks = materializar_span(sp, entrada_index)
+        caracteristicas_entrada.append({
+            "CAE": sp["label"],
+            "Fonte": fonte or "Entrada",
+            "range": {"inicio": sp["inicio"], "fim": sp["fim"]},
+            "Tokens": toks,
+        })
+
+    caracteristicas_saida = []
+    for sp in cas_spans:
+        fonte, toks = materializar_span(sp, saida_index)
+        caracteristicas_saida.append({
+            "CAS": sp["label"],
+            "Fonte": fonte or "Saída",
+            "range": {"inicio": sp["inicio"], "fim": sp["fim"]},
+            "Tokens": toks,
+        })
+
     um = {
         "UM": {
             "0": {
@@ -379,9 +530,11 @@ def build_render(tpl):
                 "blocos": [
                     {
                         "bloco_id": 1,
+                        "Características de Entrada": caracteristicas_entrada,
                         "Total de Entrada": Total_de_Entrada,
                         "ultimo_child_entrada": Total_de_Entrada[-1] if Total_de_Entrada else None,
                         "Multivars": ["0.0"],
+                        "Características de Saída": caracteristicas_saida,
                         "Total de Saída": Total_de_Saida,
                         "ultimo_child_saida": Total_de_Saida[-1] if Total_de_Saida else None,
                         "alnulu_total_bloco": alnulu_total_bloco,
@@ -393,17 +546,115 @@ def build_render(tpl):
 
     return ida, um, Total_de_Entrada, Total_de_Saida, alnulu_total_bloco
 
+# ---------------- writer: modelo (arrays 1 objeto por linha) ----------------
+def write_ida_modelo(ida_obj, fp, indent=2):
+    sp = " " * indent
+    sp2 = sp * 2
+    sp3 = sp * 3
+    sp4 = sp * 4
+    jd = lambda o: json.dumps(o, ensure_ascii=False, separators=(",", ":"))
+
+    IM = ida_obj.get("IDA", {}).get("IM", {})
+    if not IM:
+        fp.write(jd(ida_obj))
+        return
+    key0 = next(iter(IM.keys()))
+    root0 = IM[key0]
+    blocos = root0.get("blocos", [])
+
+    fp.write('{' + "\n")
+    fp.write(f"{sp}\"IDA\": {{\n")
+    fp.write(f"{sp2}\"IM\": {{\n")
+    fp.write(f"{sp3}{jd(key0)}: {{\n")
+    fp.write(f"{sp4}\"nome\": {jd(root0.get('nome', ''))},\n")
+    fp.write(f"{sp4}\"blocos\": [\n")
+
+    for bi, bloco in enumerate(blocos):
+        if bi > 0:
+            fp.write(f"{sp4},\n")
+        fp.write(f"{sp4}{{\n")
+        fp.write(f"{sp4}{sp}\"bloco_id\": {jd(bloco.get('bloco_id'))},\n")
+
+        # Entrada
+        ent = bloco.get("Entrada", {})
+        fp.write(f"{sp4}{sp}\"Entrada\": {{\n")
+        def write_array(name, last=False):
+            arr = ent.get(name, [])
+            fp.write(f"{sp4}{sp}{sp}{jd(name)}: [\n")
+            for i, obj in enumerate(arr):
+                line = jd(obj)
+                sep = "," if i < len(arr) - 1 else ""
+                fp.write(f"{sp4}{sp}{sp}{sp}{line}{sep}\n")
+            if last:
+                fp.write(f"{sp4}{sp}{sp}]\n")
+            else:
+                fp.write(f"{sp4}{sp}{sp}],\n")
+        write_array("Texto Inicial DE ENTRADA")
+        write_array("Fala DE ENTRADA")
+        write_array("Reação")
+        write_array("Contexto")
+        write_array("Texto Final de Entrada", last=True)
+        fp.write(f"{sp4}{sp}}},\n")
+
+        # Pensamento Interno
+        pides = bloco.get("Pensamento Interno", [])
+        fp.write(f"{sp4}{sp}\"Pensamento Interno\": [\n")
+        for i, obj in enumerate(pides):
+            line = jd(obj)
+            sep = "," if i < len(pides) - 1 else ""
+            fp.write(f"{sp4}{sp}{sp}{line}{sep}\n")
+        fp.write(f"{sp4}{sp}],\n")
+
+        # Total de Entrada
+        totE = bloco.get("Total de Entrada", [])
+        fp.write(f"{sp4}{sp}\"Total de Entrada\": {jd(totE)},\n")
+
+        # Saída
+        sai = bloco.get("Saída", {})
+        fp.write(f"{sp4}{sp}\"Saída\": {{\n")
+        def write_array_s(name, last=False):
+            arr = sai.get(name, [])
+            fp.write(f"{sp4}{sp}{sp}{jd(name)}: [\n")
+            for i, obj in enumerate(arr):
+                line = jd(obj)
+                sep = "," if i < len(arr) - 1 else ""
+                fp.write(f"{sp4}{sp}{sp}{sp}{line}{sep}\n")
+            if last:
+                fp.write(f"{sp4}{sp}{sp}]\n")
+            else:
+                fp.write(f"{sp4}{sp}{sp}],\n")
+        write_array_s("Texto Inicial de SAÍDA")
+        write_array_s("Fala de Saída")
+        write_array_s("Reação de Saída")
+        write_array_s("Contexto de Saída")
+        write_array_s("Texto Final de Saída", last=True)
+        fp.write(f"{sp4}{sp}}},\n")
+
+        # Sentimento, Ressonância, Total de Saída
+        fp.write(f"{sp4}{sp}\"Sentimento da Saída\": {jd(bloco.get('Sentimento da Saída', {}))},\n")
+        fp.write(f"{sp4}{sp}\"Ressonância\": {jd(bloco.get('Ressonância', False))},\n")
+        fp.write(f"{sp4}{sp}\"Total de Saída\": {jd(bloco.get('Total de Saída', []))}\n")
+
+        fp.write(f"{sp4}}}\n")
+
+    fp.write(f"{sp4}]\n")
+    fp.write(f"{sp3}}}\n")
+    fp.write(f"{sp2}}}\n")
+    fp.write(f"{sp}}}\n")
+
 # ---------------- main ----------------
 def main():
     print("Cole o bloco (termine com linha vazia):")
-    print("Comandos: :clear (limpar), :exit (sair), :help (ver comandos)")
+    print("Comandos: :clear (limpar buffer), :clearjson (apagar JSONs), :exit (sair), :help (ver comandos), :compact (JSON minificado), :pretty (JSON identado), :modelo (arrays 1 obj/linha)")
     lines = []
+    compact_mode = False
+    modelo_mode = False
     try:
         while True:
             ln = input()
             cmd = ln.strip().lower()
             if cmd in (":help", "/help", "help"):
-                print("Comandos disponíveis:\n  :clear  -> limpa o buffer atual e o console\n  :exit   -> sai do programa\n  (Finalize o bloco com uma linha vazia)")
+                print("Comandos disponíveis:\n  :clear      -> limpa o buffer atual e o console\n  :clearjson  -> apaga/trunca inconsciente.json e adam_memoria.json\n  :exit       -> sai do programa\n  :compact    -> salva JSON minificado (horizontal)\n  :pretty     -> salva JSON identado (padrão)\n  :modelo     -> arrays com 1 objeto por linha (modelo)\n  (Finalize o bloco com uma linha vazia)")
                 continue
             if cmd in (":clear", "/clear", "clear"):
                 lines = []
@@ -412,6 +663,32 @@ def main():
                 except Exception:
                     pass
                 print("Buffer limpo. Cole o bloco (termine com linha vazia):")
+                continue
+            if cmd in (":clearjson", "/clearjson", "clearjson"):
+                try:
+                    # truncar/limpar arquivos JSON de saída
+                    with open(OUT_IDA, 'w', encoding='utf-8') as f:
+                        f.write("")
+                    with open(OUT_UM, 'w', encoding='utf-8') as f:
+                        f.write("")
+                    print(f"Arquivos limpos: {OUT_IDA}, {OUT_UM}")
+                except Exception as e:
+                    print(f"Falha ao limpar JSONs: {e}")
+                continue
+            if cmd in (":compact", "/compact", "compact"):
+                compact_mode = True
+                modelo_mode = False
+                print("Modo de saída: JSON minificado (horizontal)")
+                continue
+            if cmd in (":pretty", "/pretty", "pretty"):
+                compact_mode = False
+                modelo_mode = False
+                print("Modo de saída: JSON identado")
+                continue
+            if cmd in (":modelo", "/modelo", "modelo"):
+                modelo_mode = True
+                compact_mode = False
+                print("Modo de saída: arrays com 1 objeto por linha (modelo)")
                 continue
             if cmd in (":exit", "/exit", "exit", "quit"):
                 print("Saindo...")
@@ -428,9 +705,17 @@ def main():
     ida, um, total_ent, total_sai, alnulu_val = build_render(tpl)
 
     with open(OUT_IDA, "w", encoding="utf-8") as f:
-        json.dump(ida, f, ensure_ascii=False, indent=2)
+        if modelo_mode:
+            write_ida_modelo(ida, f, indent=2)
+        elif compact_mode:
+            json.dump(ida, f, ensure_ascii=False, separators=(",", ":"))
+        else:
+            json.dump(ida, f, ensure_ascii=False, indent=2)
     with open(OUT_UM, "w", encoding="utf-8") as f:
-        json.dump(um, f, ensure_ascii=False, indent=2)
+        if compact_mode:
+            json.dump(um, f, ensure_ascii=False, separators=(",", ":"))
+        else:
+            json.dump(um, f, ensure_ascii=False, indent=2)
 
     print(f"Gerados: {OUT_IDA} e {OUT_UM}")
     print(f"alnulu_total_bloco: {alnulu_val}")
