@@ -11,7 +11,7 @@ BlocoINSEPAviaPrompt_final.py
 - Quando não houver TEXTO FINAL, emite o placeholder exigido:
   "TEXTO FINAL": [ { "TEXF":"0.0", "tokens": [ {"TEX":"0.0","t":"0.0","vars":["0.0"]} ] } ]
 """
-import re, sys, json
+import re, sys, json, os
 
 OUT_IDA = "inconsciente.json"
 OUT_UM = "adam_memoria.json"
@@ -42,8 +42,20 @@ def calcular_alnulu(texto: str) -> int:
 
 # ---------------- util ----------------
 def tokenize(s: str):
-    if not s: return []
-    return re.findall(r"\w+|[^\w\s]", s.replace('"',''), re.UNICODE)
+    if not s:
+        return []
+    # Mantém sequências entre colchetes como um único token (ex.: [Nome do user])
+    # Emoji/smileys comuns como um único token (^^, <3, :), :-), :D, ;), :P, etc.)
+    # Depois divide em palavras e pontuação
+    pattern = (
+        r"\[[^\]]+\]"                  # marcadores entre colchetes
+        r"|<3"                             # coração
+        r"|[:;][\-]?[)D(\[PpOo/\\]"   # smileys básicos :), :-), :D, :(, ;), :P, :o, :/ 
+        r"|\^{2,}"                        # sequências de carets: ^^, ^^^
+        r"|\w+"                           # palavras/dígitos/underscore
+        r"|[^\w\s]"                       # qualquer pontuação isolada
+    )
+    return re.findall(pattern, s.replace('"',''), re.UNICODE)
 
 def gen_markers(base: str, n: int):
     part, _, suf = base.partition(".")
@@ -56,308 +68,310 @@ def gen_markers(base: str, n: int):
 # ---------------- parse (pensamento non-greedy) ----------------
 def parse_block(lines):
     txt = "\n".join(lines)
-    def find_first(pat, flags=re.IGNORECASE|re.DOTALL):
+
+    def find_first(pat, flags=re.IGNORECASE | re.DOTALL):
         m = re.search(pat, txt, flags)
         return m.group(1).strip() if m else ""
-    entrada = find_first(r'Entrada:\s*"([^"]*?)"')
-    reacao = find_first(r'(?m)^Reação:\s*([^\n\r]+)')
-    contexto = find_first(r'Contexto:\s*([^\n\r]+)')
-    pensamento = find_first(r'Pensamento Interno:\s*"([^"]*?)"(?=\n^Saída:|\n^Saída\s*:|\Z)', flags=re.MULTILINE|re.DOTALL)
-    # captura bloco Saída para extrair Nome se estiver lá
-    saida_nome = ""
-    m_saida = re.search(r'(?m)^Saída:\s*([\s\S]*?)(?=\n^[A-Za-z].*:|\Z)', txt)
-    if m_saida:
-        bloco_saida_text = m_saida.group(1)
-        m_nome = re.search(r'Nome:\s*"([^"]*)"', bloco_saida_text)
-        if m_nome:
-            saida_nome = m_nome.group(1).strip()
-    if not saida_nome:
-        saida_nome = find_first(r'Nome:\s*"([^"]*)"')
-    texto_inicial_raw = find_first(r'Texto Inicial:\s*"([^"]*?)"') or find_first(r'Texto Inicial:\s*([^\n\r]+)')
-    fs_line = find_first(r'—\s*([^\n\r]+)')
-    # última Reação global (para RS)
+
+    # -------- Entrada (entre 'Entrada:' e 'Saída:' ou fim) --------
+    m_ent = re.search(r'(?ims)^\s*Entrada\s*:\s*([\s\S]*?)(?=^\s*Saída\s*:|\Z)', txt)
+    entrada_block = (m_ent.group(1) if m_ent else "").strip()
+
+    # Extrair e remover Reação/Contexto do bloco de Entrada
+    reacao_entrada = ""
+    m_re_in = re.search(r'(?im)^\s*Reação\s*:\s*([^\n\r]+)', entrada_block)
+    if m_re_in:
+        reacao_entrada = m_re_in.group(1).strip()
+        entrada_block = entrada_block.replace(m_re_in.group(0), "").strip()
+    contexto_entrada = ""
+    m_ctx_in = re.search(r'(?im)^\s*Contexto\s*:\s*([^\n\r]+)', entrada_block)
+    if m_ctx_in:
+        contexto_entrada = m_ctx_in.group(1).strip()
+        entrada_block = entrada_block.replace(m_ctx_in.group(0), "").strip()
+
+    # Linhas de Entrada e falas (— ...)
+    linhas_ent = [ln.rstrip() for ln in entrada_block.splitlines() if ln.strip()]
+    idxs_fala_ent = [i for i, ln in enumerate(linhas_ent) if re.match(r'^\s*—', ln)]
+    falas_entrada = [linhas_ent[i] for i in idxs_fala_ent]
+
+    # TEXE: antes da 1ª fala; TEFIE: após a última fala
+    if idxs_fala_ent:
+        first_idx = idxs_fala_ent[0]
+        last_idx = idxs_fala_ent[-1]
+        texe_parts = [ln for ln in linhas_ent[:first_idx] if not re.match(r'^\s*—', ln)]
+        tefie_parts = [ln for ln in linhas_ent[last_idx+1:] if not re.match(r'^\s*—', ln)]
+        entrada_texto = " ".join(texe_parts).strip()
+        tefie_texto = " ".join(tefie_parts).strip()
+    else:
+        entrada_texto = " ".join(linhas_ent).strip()
+        tefie_texto = ""
+
+    # Pensamento Interno (conteúdo entre aspas após rótulo)
+    m_pens = re.search(r'(?is)Pensamento\s*interno\s*:\s*"([\s\S]*?)"', txt)
+    pensamento = m_pens.group(1).strip() if m_pens else ""
+
+    # -------- Saída (após 'Saída:') --------
+    m_saida = re.search(r'(?ims)^\s*Saída\s*:\s*([\s\S]*?)\Z', txt)
+    saida_block = (m_saida.group(1) if m_saida else "").strip()
+
+    # Extrair e remover Reação/Contexto da Saída
     reac_saida = ""
-    for m in re.finditer(r'(?m)^Reação:\s*([^\n\r]+)', txt):
-        reac_saida = m.group(1).strip()
-    texto_final_raw = find_first(r'Texto final:\s*"([^"]*?)"') or ""
-    if not entrada:
-        raise SystemExit('Erro: "Entrada" é obrigatória. Use: Entrada: "..."')
+    m_re_out = re.search(r'(?im)^\s*Reação\s*:\s*([^\n\r]+)', saida_block)
+    if m_re_out:
+        reac_saida = m_re_out.group(1).strip()
+        saida_block = saida_block.replace(m_re_out.group(0), "").strip()
+    contexto_saida = ""
+    m_ctx_out = re.search(r'(?im)^\s*Contexto\s*:\s*([^\n\r]+)', saida_block)
+    if m_ctx_out:
+        contexto_saida = m_ctx_out.group(1).strip()
+        saida_block = saida_block.replace(m_ctx_out.group(0), "").strip()
+
+    # Linhas de Saída e falas (— ...)
+    linhas_out = [ln.rstrip() for ln in saida_block.splitlines() if ln.strip()]
+    idxs_fala_out = [i for i, ln in enumerate(linhas_out) if re.match(r'^\s*—', ln)]
+    falas_saida = [linhas_out[i] for i in idxs_fala_out]
+    if idxs_fala_out:
+        first_idx = idxs_fala_out[0]
+        last_idx = idxs_fala_out[-1]
+        saida_texto_inicial = " ".join([ln for ln in linhas_out[:first_idx] if not re.match(r'^\s*—', ln)]).strip()
+        texto_final_saida = " ".join([ln for ln in linhas_out[last_idx+1:] if not re.match(r'^\s*—', ln)]).strip()
+    else:
+        saida_texto_inicial = " ".join(linhas_out).strip()
+        texto_final_saida = ""
+    fs_line = " ".join(falas_saida)
+
+    if not (entrada_texto or falas_entrada or tefie_texto):
+        raise SystemExit('Erro: "Entrada" é obrigatória. Use o rótulo Entrada: no início do bloco.')
+
     return {
-        "entrada": {"texto": entrada, "reacao": reacao, "contexto": contexto, "pensamento": pensamento},
-        "saida": {"nome": saida_nome, "texto_inicial_raw": texto_inicial_raw, "fs_line": fs_line, "reac_saida": reac_saida, "texto_final_raw": texto_final_raw},
-        "raw": txt
+        "entrada": {
+            "texto_inicial": entrada_texto,
+            "falas": falas_entrada,
+            "reacao": reacao_entrada,
+            "contexto": contexto_entrada,
+            "texto_final": tefie_texto,
+            "pensamento": pensamento,
+        },
+        "saida": {
+            "texto_inicial": saida_texto_inicial,
+            "fala": fs_line,
+            "reacao": reac_saida,
+            "contexto": contexto_saida,
+            "texto_final": texto_final_saida,
+        },
+        "raw": txt,
     }
 
 # ---------------- build & render (ordem garantida, placeholder TEXTO FINAL) ----------------
 def build_render(tpl):
     part = "0"
 
-    # Entrada tokens / markers
-    entrada_words = tokenize(tpl["entrada"]["texto"])
-    Em = gen_markers(f"{part}.0", len(entrada_words))
-    Entrada = [{"E": m, "t": w, "vars": ["0.0"]} for m, w in zip(Em, entrada_words)]
+    # Detecta CAE/CAS a partir de tokens com colchetes, preservando rótulo como digitado
+    def detect_campo(token: str, saida: bool):
+        raw = token.strip()
+        low = raw.lower()
+        if low.startswith('[') and low.endswith(']'):
+            inside = raw[1:-1].strip()
+            # Padrão com prefixo (ex.: CAE: Estilo)
+            m = re.match(r'(?is)^(cae|cas)\s*:\s*(.+)$', inside)
+            if m:
+                kind = m.group(1).upper()
+                label = m.group(2).strip()
+                # remover pontuação final comum
+                label = re.sub(r'[\s\.;:,]+$','', label)
+                return (kind, label)
+            # Padrões legados (fallback)
+            legacy = inside.lower()
+            if 'nome do user' in legacy:
+                return ('CAE', 'Nome')
+            if 'estilo do user' in legacy:
+                return ('CAE', 'Estilo')
+            if 'cabelo do user' in legacy:
+                return ('CAE', 'Cabelo')
+            if 'nome do narrador' in legacy:
+                return ('CAS', 'Nome')
+        return None
 
-    # Reação entrada
-    reacao_words = tokenize(tpl["entrada"]["reacao"])
-    REm = gen_markers(Em[-1] if Em else f"{part}.0", len(reacao_words))
-    Reacao = [{"RE": m, "t": w, "vars": ["0.0"]} for m, w in zip(REm, reacao_words)]
+    # Gerencia sequência linear de marcadores 0.1, 0.2, ...
+    cur = 0
+    def next_marks(n):
+        nonlocal cur
+        marks = [f"{part}.{i}" for i in range(cur + 1, cur + n + 1)]
+        cur += n
+        return marks
 
-    # Contexto
-    ctx_words = tpl["entrada"]["contexto"].split() if tpl["entrada"]["contexto"] else []
-    CEm = gen_markers(REm[-1] if REm else (Em[-1] if Em else f"{part}.0"), len(ctx_words))
-    Contexto = [{"CE": m, "t": w} for m, w in zip(CEm, ctx_words)]
+    # Helper: aplica rótulos como estado ativo até próximo marcador ou fim de sentença
+    def emit_tokens(words, keyname: str, saida_flag: bool):
+        out = []
+        active_cae = []  # lista de rótulos CAE ativos
+        active_cas = []  # lista de rótulos CAS ativos
+        for w in words:
+            campo = detect_campo(w, saida=saida_flag)
+            if campo:
+                kind, label = campo
+                if kind == 'CAE':
+                    active_cae = [label]
+                elif kind == 'CAS':
+                    active_cas = [label]
+                continue  # não emite token para marcador
+            # token textual real
+            m = next_marks(1)[0]
+            item = {keyname: m, "t": w, "vars": ["0.0"]}
+            # aplica rótulos ativos do contexto adequado
+            if not saida_flag and active_cae:
+                item.setdefault('cae', []).extend(active_cae)
+            if saida_flag and active_cas:
+                item.setdefault('cas', []).extend(active_cas)
+            out.append(item)
+            # Se for fim de sentença, limpar rótulos ativos
+            if w in ['.', '!', '?']:
+                active_cae = []
+                active_cas = []
+        return out
 
-    # Pensamento Interno
-    PIm = gen_markers(CEm[-1] if CEm else (REm[-1] if REm else (Em[-1] if Em else f"{part}.0")), 1)
-    Pensamento = [{"PIDE": PIm[0], "t": tpl["entrada"]["pensamento"]}]
+    # Entrada
+    TEXE_list = []
+    entrada_words = tokenize(tpl["entrada"].get("texto_inicial", "")) if tpl["entrada"].get("texto_inicial") else []
+    if entrada_words:
+        TEXE_list = emit_tokens(entrada_words, "TEXE", False)
 
-    # Total de Entrada (ordem correta)
-    Total_de_Entrada = []
-    Total_de_Entrada += [e["E"] for e in Entrada]
-    Total_de_Entrada += [r["RE"] for r in Reacao]
-    Total_de_Entrada += [c["CE"] for c in Contexto]
-    Total_de_Entrada += [p["PIDE"] for p in Pensamento]
+    FADEN_list = []
+    for line in tpl["entrada"].get("falas", []):
+        words = tokenize(line)
+        if words:
+            FADEN_list.extend(emit_tokens(words, "FADEN", False))
 
-    # Saída - Nome
-    ns_marker = f"{part}.9"
-    ns_name = tpl["saida"]["nome"] or "0.0"
+    RE_list = []
+    reacao_words = tokenize(tpl["entrada"].get("reacao", "")) if tpl["entrada"].get("reacao") else []
+    if reacao_words:
+        RE_list = emit_tokens(reacao_words, "RE", False)
 
-    # TEXTO INICIAL -> sentenças e tokens
-    texto_inicial = []
-    raw = (tpl["saida"]["texto_inicial_raw"] or "").strip()
-    mother_idx = 10
-    if raw:
-        parts = re.findall(r'[^.?!]+[.?!]|[^.?!]+$', raw)
-        for sent in [p.strip() for p in parts if p.strip()]:
-            mae = f"{part}.{mother_idx}"
-            words = tokenize(sent)
-            tokens = [{"TEX": f"{mae}.{i+1}", "t": w, "vars": ["0.0"]} for i, w in enumerate(words)]
-            texto_inicial.append({"TEXI": mae, "tokens": tokens})
-            mother_idx += 1
+    CE_in_list = []
+    ctx_words = tokenize(tpl["entrada"].get("contexto", "")) if tpl["entrada"].get("contexto") else []
+    if ctx_words:
+        CE_in_list = emit_tokens(ctx_words, "CE", False)
 
-    # FS
-    fs_list = []
-    if tpl["saida"]["fs_line"]:
-        fs_words = tokenize(tpl["saida"]["fs_line"])
-        fs_marks = gen_markers(f"{part}.11", len(fs_words))
-        fs_list = [{"FS": m, "t": w, "vars": ["0.0"]} for m, w in zip(fs_marks, fs_words)]
+    TEFIE_list = []
+    tefie_words = tokenize(tpl["entrada"].get("texto_final", "")) if tpl["entrada"].get("texto_final") else []
+    if tefie_words:
+        TEFIE_list = emit_tokens(tefie_words, "TEFIE", False)
 
-    # RS
-    RS = []
-    if tpl["saida"]["reac_saida"]:
-        rs_words = tokenize(tpl["saida"]["reac_saida"])
-        start_rs = fs_list[-1]["FS"] if fs_list else f"{part}.11"
-        rs_marks = gen_markers(start_rs, len(rs_words))
-        RS = [{"RS": m, "t": w, "vars": ["0.0"]} for m, w in zip(rs_marks, rs_words)]
+    # Pensamento Interno (frases -> PIDE) com extração de CAE dentro do pensamento
+    PIDE_list = []
+    pensamentos = tpl["entrada"].get("pensamento", "") or ""
+    if pensamentos:
+        parts = re.findall(r'[^.?!]+[.?!]|[^.?!]+$', pensamentos)
+        for raw in [p for p in parts if p.strip()]:
+            tokens = tokenize(raw)
+            cae_labels = []
+            clean_tokens = []
+            for tok in tokens:
+                lab = detect_campo(tok, saida=False)
+                if lab and lab[0] == 'CAE':
+                    if lab[1] not in cae_labels:
+                        cae_labels.append(lab[1])
+                    continue
+                clean_tokens.append(tok)
+            clean_text = " ".join(clean_tokens).strip()
+            mark = next_marks(1)[0]
+            item = {"PIDE": mark, "t": clean_text}
+            if cae_labels:
+                item["cae"] = cae_labels
+            PIDE_list.append(item)
 
-    # TEXTO FINAL (cria estrutura quando há texto; caso contrário, TEXTO_FINAL fica [])
-    TEXTO_FINAL = []
-    if tpl["saida"]["texto_final_raw"]:
-        texf = f"{part}.19"
-        words = tokenize(tpl["saida"]["texto_final_raw"])
-        tokens = [{"TEX": f"{texf}.{i+1}", "t": w, "vars": ["0.0"]} for i, w in enumerate(words)]
-        if tokens:
-            TEXTO_FINAL = [{"TEXF": texf, "tokens": tokens}]
+    Total_de_Entrada = [
+        *[x["TEXE"] for x in TEXE_list],
+        *[x["FADEN"] for x in FADEN_list],
+        *[x["RE"] for x in RE_list],
+        *[x["CE"] for x in CE_in_list],
+        *[x["TEFIE"] for x in TEFIE_list],
+        *[p["PIDE"] for p in PIDE_list],
+    ]
 
-    # Total de Saída (ordem: ns, TEXI mothers, FS, RS, TEXF)
-    Total_de_Saida = []
-    Total_de_Saida.append(ns_marker)
-    Total_de_Saida += [ti["TEXI"] for ti in texto_inicial]
-    Total_de_Saida += [f["FS"] for f in fs_list]
-    Total_de_Saida += [r["RS"] for r in RS]
-    Total_de_Saida += [tf["TEXF"] for tf in TEXTO_FINAL]
-    Total_de_Saida = [x for x in Total_de_Saida if x]
+    # Saída
+    TEXIS_list = []
+    texis_words = tokenize(tpl["saida"].get("texto_inicial", "")) if tpl["saida"].get("texto_inicial") else []
+    if texis_words:
+        TEXIS_list = emit_tokens(texis_words, "TEXIS", True)
 
-    # Características de usuário (após Contexto; sem inferência)
-    caracteristicas_usuario = {
-        "CAE": "0.0",
-        "Nome do usuário": {"E": "0.0", "t": "0.0", "Multivars": ["0.0"]},
-        "Cabelo": [{"E": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
-        "Olhos": [{"E": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
-        "Pele": [{"E": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
-        "estilo": [{"E": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
-        "Forma": [{"E": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
-        "Personalidade": [{"E": "0.0", "t": "0.0", "Multivars": ["0.0"]}]
-    }
+    FS_list = []
+    fs_words = tokenize(tpl["saida"].get("fala", "")) if tpl["saida"].get("fala") else []
+    if fs_words:
+        FS_list = emit_tokens(fs_words, "FS", True)
 
-    # Características extraídas de TEXTO (apenas anotações literais)
-    char_texto = {
-        "Cabelo": [{"TEX": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
-        "Olhos": [{"TEX": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
-        "Pele": [{"TEX": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
-        "estilo": [{"TEX": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
-        "Forma": [{"TEX": "0.0", "t": "0.0", "Multivars": ["0.0"]}],
-        "Personalidade": [{"TEX": "0.0", "t": "0.0", "Multivars": ["0.0"]}]
-    }
-    if texto_inicial:
-        t0 = texto_inicial[0]["tokens"]
-        seq = ["olhos", "cor", "de", "mel"]
-        for i in range(len(t0) - 3):
-            words = [t0[i + j]["t"].lower() for j in range(4)]
-            if words == seq:
-                char_texto["Olhos"] = [{
-                    "TEX": [t0[i]["TEX"], t0[i + 1]["TEX"], t0[i + 2]["TEX"], t0[i + 3]["TEX"]],
-                    "t": "olhos cor de mel",
-                    "Multivars": ["Olhos castanhos"]
-                }]
-                break
-        for tok in t0:
-            if tok["t"].lower() == "doçura":
-                char_texto["Personalidade"] = [{"TEX": tok["TEX"], "t": "doçura", "Multivars": ["0.0"]}]
-                break
+    RS_list = []
+    rs_words = tokenize(tpl["saida"].get("reacao", "")) if tpl["saida"].get("reacao") else []
+    if rs_words:
+        RS_list = emit_tokens(rs_words, "RS", True)
+
+    CE_out_list = []
+    ceo_words = tokenize(tpl["saida"].get("contexto", "")) if tpl["saida"].get("contexto") else []
+    if ceo_words:
+        CE_out_list = emit_tokens(ceo_words, "CE", True)
+
+    TEXFS_list = []
+    texfs_words = tokenize(tpl["saida"].get("texto_final", "")) if tpl["saida"].get("texto_final") else []
+    if texfs_words:
+        TEXFS_list = emit_tokens(texfs_words, "TEXFS", True)
+
+    Total_de_Saida = [
+        *[x["TEXIS"] for x in TEXIS_list],
+        *[x["FS"] for x in FS_list],
+        *[x["RS"] for x in RS_list],
+        *[x["CE"] for x in CE_out_list],
+        *[x["TEXFS"] for x in TEXFS_list],
+    ]
 
     # ALNULU do bloco
     alnulu_src = [
-        tpl["entrada"]["texto"], tpl["entrada"]["reacao"], tpl["entrada"]["contexto"],
-        tpl["entrada"]["pensamento"], tpl["saida"]["nome"], tpl["saida"]["texto_inicial_raw"],
-        tpl["saida"]["fs_line"], tpl["saida"]["reac_saida"], tpl["saida"]["texto_final_raw"]
+        tpl["entrada"].get("texto_inicial", ""),
+        " ".join(tpl["entrada"].get("falas", [])),
+        tpl["entrada"].get("reacao", ""),
+        tpl["entrada"].get("contexto", ""),
+        tpl["entrada"].get("texto_final", ""),
+        tpl["entrada"].get("pensamento", ""),
+        tpl["saida"].get("texto_inicial", ""),
+        tpl["saida"].get("fala", ""),
+        tpl["saida"].get("reacao", ""),
+        tpl["saida"].get("contexto", ""),
+        tpl["saida"].get("texto_final", ""),
     ]
     alnulu_total_bloco = calcular_alnulu(" ".join([s for s in alnulu_src if s]))
 
-    # Render textual exatamente no formato exigido
-    lines = []
-    lines.append('{')
-    lines.append('  "IDA": {')
-    lines.append('    "IM": {')
-    lines.append('      "0": {')
-    lines.append('        "bloco_id": 1,')
-    # Entrada
-    lines.append('        "Entrada": [')
-    for i, it in enumerate(Entrada):
-        comma = ',' if i < len(Entrada) - 1 else ''
-        lines.append(f'          {{"E":"{it["E"]}","t":"{it["t"]}","vars":["{it["vars"][0]}"]}}{comma}')
-    lines.append('        ],')
-    lines.append('        "Multivars": ["0.0"],')
-    # Reação
-    lines.append('        "Reação": [')
-    for i, it in enumerate(Reacao):
-        comma = ',' if i < len(Reacao) - 1 else ''
-        lines.append(f'          {{"RE":"{it["RE"]}","t":"{it["t"]}","vars":["{it["vars"][0]}"]}}{comma}')
-    lines.append('        ],')
-    # Contexto
-    lines.append('        "Contexto": [')
-    for i, it in enumerate(Contexto):
-        comma = ',' if i < len(Contexto) - 1 else ''
-        lines.append(f'          {{"CE":"{it["CE"]}","t":"{it["t"]}"}}{comma}')
-    lines.append('        ],')
-    # Características de usuário (após Contexto)
-    lines.append('          "Características de usuário": {')
-    lines.append(f'            "CAE": "{caracteristicas_usuario["CAE"]}",')
-    nu = caracteristicas_usuario["Nome do usuário"]
-    lines.append(f'            "Nome do usuário": ["E": "{nu["E"]}", "t": "{nu["t"]}", "Multivars": ["{nu["Multivars"][0]}"]],')
-    for key in ("Cabelo", "Olhos", "Pele", "estilo", "Forma", "Personalidade"):
-        e = caracteristicas_usuario[key][0]
-        lines.append(f'            "{key}": [')
-        lines.append(f'              {{"E":"{e["E"]}","t":"{e["t"]}","Multivars":["{e["Multivars"][0]}"]}}')
-        lines.append('            ],')
-    lines.append('          },')
-    # Pensamento Interno
-    lines.append('        "Pensamento Interno": [')
-    lines.append(f'          {{"PIDE":"{Pensamento[0]["PIDE"]}","t":"{Pensamento[0]["t"]}"}}')
-    lines.append('        ],')
-    # Total de Entrada
-    lines.append('        "Total de Entrada": [')
-    lines.append('          ' + ",".join(f'"{m}"' for m in Total_de_Entrada))
-    lines.append('        ],')
-    # Saída (após Total de Entrada)
-    lines.append('        "Saída": {')
-    # Nome
-    lines.append('          "Nome": [')
-    lines.append(f'            {{"NS":"{ns_marker}","t":"{ns_name}","multivars":["0.0"]}}')
-    lines.append('          ],')
-    # TEXTO INICIAL
-    lines.append('          "TEXTO INICIAL": [')
-    for si, ti in enumerate(texto_inicial):
-        comma = ',' if si < len(texto_inicial) - 1 else ''
-        lines.append('            {')
-        lines.append(f'              "TEXI":"{ti["TEXI"]}",')
-        lines.append('              "tokens": [')
-        for j, tok in enumerate(ti["tokens"]):
-            c2 = ',' if j < len(ti["tokens"]) - 1 else ''
-            lines.append(f'                {{"TEX":"{tok["TEX"]}","t":"{tok["t"]}","vars":["0.0"]}}{c2}')
-        lines.append('              ]')
-        lines.append(f'            }}{comma}')
-    lines.append('          ],')
-    # FS
-    lines.append('          "FS": [')
-    for i, f in enumerate(fs_list):
-        comma = ',' if i < len(fs_list) - 1 else ''
-        lines.append(f'            {{"FS":"{f["FS"]}","t":"{f["t"]}","vars":["0.0"]}}{comma}')
-    lines.append('          ],')
-    # RS
-    lines.append('          "RS": [')
-    for i, r in enumerate(RS):
-        comma = ',' if i < len(RS) - 1 else ''
-        lines.append(f'            {{"RS":"{r["RS"]}","t":"{r["t"]}","vars":["0.0"]}}{comma}')
-    lines.append('          ],')
-    # TEXTO FINAL (placeholder when empty)
-    lines.append('          "TEXTO FINAL": [')
-    if not TEXTO_FINAL:
-        lines.append('            {')
-        lines.append('              "TEXF":"0.0",')
-        lines.append('              "tokens": [')
-        lines.append('                {"TEX":"0.0","t":"0.0","vars":["0.0"]}')
-        lines.append('              ]')
-        lines.append('            }')
-        lines.append('          ],')
-    else:
-        for i, tf in enumerate(TEXTO_FINAL):
-            comma = ',' if i < len(TEXTO_FINAL) - 1 else ''
-            lines.append('            {')
-            lines.append(f'              "TEXF":"{tf["TEXF"]}",')
-            lines.append('              "tokens": [')
-            for j, tok in enumerate(tf["tokens"]):
-                c2 = ',' if j < len(tf["tokens"]) - 1 else ''
-                lines.append(f'                {{"TEX":"{tok["TEX"]}","t":"{tok["t"]}","vars":["0.0"]}}{c2}')
-            lines.append('              ]')
-            lines.append(f'            }}{comma}')
-        lines.append('          ],')
-    # Características extraídas de TEXTO:
-    lines.append('          "Características extraídas de TEXTO:": {')
-    lines.append('            "Cabelo": [')
-    lines.append('              {"TEX":"0.0","t":"0.0","Multivars":["0.0"]}')
-    lines.append('            ],')
-    vo = char_texto["Olhos"][0]
-    if isinstance(vo["TEX"], list):
-        tex_field = "[" + ",".join(f'"{x}"' for x in vo["TEX"]) + "]"
-    else:
-        tex_field = f'"{vo["TEX"]}"'
-    lines.append('            "Olhos": [')
-    lines.append(f'              {{"TEX":{tex_field},"t":"{vo["t"]}","Multivars":["{vo["Multivars"][0]}"]}}')
-    lines.append('            ],')
-    lines.append('            "Pele": [')
-    lines.append('              {"TEX":"0.0","t":"0.0","Multivars":["0.0"]}')
-    lines.append('            ],')
-    lines.append('            "estilo": [')
-    lines.append('              {"TEX":"0.0","t":"0.0","Multivars":["0.0"]}')
-    lines.append('            ],')
-    lines.append('            "Forma": [')
-    lines.append('              {"TEX":"0.0","t":"0.0","Multivars":["0.0"]}')
-    lines.append('            ],')
-    vp = char_texto["Personalidade"][0]
-    lines.append('            "Personalidade": [')
-    lines.append(f'              {{"TEX":"{vp["TEX"]}","t":"{vp["t"]}","Multivars":["{vp["Multivars"][0]}"]}}')
-    lines.append('            ]')
-    lines.append('          },')
-    # Sentimento / Tendência / Ressonância
-    lines.append('          "Sentimento da Saída": {')
-    lines.append('            "SDS":"0.0",')
-    lines.append('            "t":"Neutro"')
-    lines.append('          },')
-    lines.append('          "Tendência da Saída": 0.0,')
-    lines.append('          "Ressonância": false')
-    lines.append('        },')
-    # Total de Saída
-    lines.append('        "Total de Saída": [')
-    lines.append('          ' + ", ".join(f'"{x}"' for x in Total_de_Saida))
-    lines.append('        ]')
-    lines.append('      }')
-    lines.append('    }')
-    lines.append('  }')
-    lines.append('}')
-    rendered = "\n".join(lines)
+    ida = {
+        "IDA": {
+            "IM": {
+                "0": {
+                    "nome": "",
+                    "blocos": [
+                        {
+                            "bloco_id": 1,
+                            "Entrada": {
+                                "Texto Inicial DE ENTRADA": TEXE_list,
+                                "Fala DE ENTRADA": FADEN_list,
+                                "Reação": RE_list,
+                                "Contexto": CE_in_list,
+                                "Texto Final de Entrada": TEFIE_list,
+                            },
+                            "Pensamento Interno": PIDE_list,
+                            "Total de Entrada": Total_de_Entrada,
+                            "Saída": {
+                                "Texto Inicial de SAÍDA": TEXIS_list,
+                                "Fala de Saída": FS_list,
+                                "Reação de Saída": RS_list,
+                                "Contexto de Saída": CE_out_list,
+                                "Texto Final de Saída": TEXFS_list,
+                            },
+                            "Sentimento da Saída": {"SDS": "0.0", "t": "Neutro", "Tendência da Saída": 0.0},
+                            "Ressonância": False,
+                            "Total de Saída": Total_de_Saida,
+                        }
+                    ],
+                }
+            }
+        }
+    }
 
-    # UM (JSON válido) com alnulu_total_bloco
     um = {
         "UM": {
             "0": {
@@ -370,22 +384,38 @@ def build_render(tpl):
                         "Multivars": ["0.0"],
                         "Total de Saída": Total_de_Saida,
                         "ultimo_child_saida": Total_de_Saida[-1] if Total_de_Saida else None,
-                        "alnulu_total_bloco": alnulu_total_bloco
+                        "alnulu_total_bloco": alnulu_total_bloco,
                     }
-                ]
+                ],
             }
         }
     }
 
-    return rendered, um, Total_de_Entrada, Total_de_Saida, alnulu_total_bloco
+    return ida, um, Total_de_Entrada, Total_de_Saida, alnulu_total_bloco
 
 # ---------------- main ----------------
 def main():
     print("Cole o bloco (termine com linha vazia):")
+    print("Comandos: :clear (limpar), :exit (sair), :help (ver comandos)")
     lines = []
     try:
         while True:
             ln = input()
+            cmd = ln.strip().lower()
+            if cmd in (":help", "/help", "help"):
+                print("Comandos disponíveis:\n  :clear  -> limpa o buffer atual e o console\n  :exit   -> sai do programa\n  (Finalize o bloco com uma linha vazia)")
+                continue
+            if cmd in (":clear", "/clear", "clear"):
+                lines = []
+                try:
+                    os.system('cls')
+                except Exception:
+                    pass
+                print("Buffer limpo. Cole o bloco (termine com linha vazia):")
+                continue
+            if cmd in (":exit", "/exit", "exit", "quit"):
+                print("Saindo...")
+                return
             if not ln and lines:
                 break
             if not ln:
@@ -395,10 +425,10 @@ def main():
         pass
 
     tpl = parse_block(lines)
-    rendered, um, total_ent, total_sai, alnulu_val = build_render(tpl)
+    ida, um, total_ent, total_sai, alnulu_val = build_render(tpl)
 
     with open(OUT_IDA, "w", encoding="utf-8") as f:
-        f.write(rendered)
+        json.dump(ida, f, ensure_ascii=False, indent=2)
     with open(OUT_UM, "w", encoding="utf-8") as f:
         json.dump(um, f, ensure_ascii=False, indent=2)
 
