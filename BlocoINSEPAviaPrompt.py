@@ -4,20 +4,17 @@
 BlocoINSEPAviaPrompt_final.py
 - Lê bloco por stdin (termine com linha vazia)
 - Gera inconsciente.json (texto no formato exato que você exigiu)
-- Gera adam_memoria.json (JSON válido) contendo alnulu_total_bloco, resumo do bloco e Multivars no IM (por bloco)
+- Gera adam_memoria.json (JSON válido) contendo alnulu_total_bloco, resumo do bloco e Multivars no UM (por bloco)
 - Coloca "Características de usuário" imediatamente após "Contexto"
 - Sem inferência: Características de usuário ficam em 0.0 se não fornecidas
 - ALNULU calculado a partir do conteúdo literal do bloco
 - Quando não houver TEXTO FINAL, emite o placeholder exigido:
-  "TEXTO FINAL": [ { "TEXF":"0.0", "tokens": [ {"TEX":"0.0","t":"0.0","vars":["0.0"]} ] } ]
-- Multivars (paráfrases) ficam no IM, por bloco, como objetos:
-  {
-    "Fonte": "Texto de Entrada Inicial",
-    "range": { "inicio": "0.x", "fim": "0.y" },
-    "text": "Frase original",
-    "alternativas": ["Alt 1", "Alt 2"],
-    "meta": { opcional }
-  }
+    "TEXTO FINAL": [ { "TEXF":"0.0", "tokens": [ {"TEX":"0.0","t":"0.0","vars":["0.0"]} ] } ]
+- Multivars (paráfrases) no UM agora ficam separadas por seção:
+        - "Lista de Multivariações de Entrada": [ { "Fonte", "Dado", "Tokens", "Multivars:", <Dado>: [...] } ]
+        - "Lista de Multivariações de Saída":   [ { "Fonte", "Dado", "Tokens", "Multivars:", <Dado>: [...] } ]
+    Cada item corresponde a um intervalo detectado (inline ou a partir do bloco Multivars:),
+    com suas alternativas associadas. Se um item não tiver alternativas, "Multivars:" será ["0.0"].
 
 Entrada de Multivars no prompt (opcional):
 - Ao final do bloco, insira:
@@ -28,7 +25,13 @@ Multivars:
 
 Observações:
 - As alternativas não geram marcadores até serem selecionadas em outro pipeline.
-- Caso não haja Multivars, o IM terá "Multivars": ["0.0"].
+- Também é possível marcar Multivars inline no próprio texto com:
+    [Multivars] (genérico), [Multivars de entrada] ou [Multivars de saída].
+    Esses marcadores funcionam como abre/fecha. Se você abrir e não fechar,
+    o intervalo se estende até o final da seção atual:
+        - Entrada: de TEXE até TEFIE
+        - Saída: de TEXIS até TEXFS
+    Assim, o Multivars pode cobrir toda a Entrada e toda a Saída quando deixado aberto.
 """
 import re, sys, json, os
 import unicodedata
@@ -36,6 +39,10 @@ from typing import List, Dict, Tuple
 
 OUT_IDA = "inconsciente.json"
 OUT_UM = "adam_memoria.json"
+
+# Opcional: incluir no UM um índice de tokens (marcador -> texto + fonte)
+# Mantém a associação direta sem precisar consultar o IDA.
+INCLUDE_TOKENS_INDEX_IN_UM = False
 
 # ---------------- Config de marcadores (janela reservada) ----------------
 # Parte/prefixo dos marcadores (ex.: "0" gera 0.1, 0.2, ...)
@@ -338,6 +345,10 @@ def build_render(tpl):
     mv_out_start = None
     mv_spans_out = []
 
+    # Primeiros e últimos marcadores (para cobrir toda a seção quando necessário)
+    first_mark_in = None
+    first_mark_out = None
+
     # Helper: aplica rótulos por FAIXA entre marcadores pareados [CAE:X] ... [CAE:X]
     def emit_tokens(words, keyname: str, saida_flag: bool):
         out = []
@@ -345,6 +356,7 @@ def build_render(tpl):
         nonlocal cas_active, cas_pending_open, cas_display, cas_spans, last_mark_out
         nonlocal mv_in_pending_open, mv_in_active, mv_in_start, mv_spans_in
         nonlocal mv_out_pending_open, mv_out_active, mv_out_start, mv_spans_out
+        nonlocal first_mark_in, first_mark_out
         for w in words:
             campo = detect_campo(w, saida=saida_flag)
             if campo:
@@ -404,6 +416,11 @@ def build_render(tpl):
             # token textual real
             m = next_marks(1)[0]
             item = {keyname: m, "t": w, "vars": ["0.0"]}
+            # Registrar primeiro marcador da seção
+            if not saida_flag and first_mark_in is None:
+                first_mark_in = m
+            if saida_flag and first_mark_out is None:
+                first_mark_out = m
             # abrir spans pendentes nesta posição
             if not saida_flag and cae_pending_open:
                 for canon in list(cae_pending_open):
@@ -557,8 +574,14 @@ def build_render(tpl):
     # Fechar Multivars remanescentes
     if mv_in_active and last_mark_in is not None:
         mv_spans_in.append({"inicio": mv_in_start, "fim": last_mark_in})
+    elif mv_in_pending_open and first_mark_in is not None and last_mark_in is not None:
+        # Se foi aberto mas não ativado (sem tokens após o marcador), cobre toda a Entrada
+        mv_spans_in.append({"inicio": first_mark_in, "fim": last_mark_in})
     if mv_out_active and last_mark_out is not None:
         mv_spans_out.append({"inicio": mv_out_start, "fim": last_mark_out})
+    elif mv_out_pending_open and first_mark_out is not None and last_mark_out is not None:
+        # Se foi aberto mas não ativado (sem tokens após o marcador), cobre toda a Saída
+        mv_spans_out.append({"inicio": first_mark_out, "fim": last_mark_out})
 
     ida = {
         "IDA": {
@@ -619,6 +642,26 @@ def build_render(tpl):
     for tkn in TEXFS_list:
         saida_index.append((tkn["TEXFS"], tkn["t"], "Texto Final de Saída"))
 
+    # Índice de tokens (opcional) por marcador
+    entrada_idx_map = {mark: {"t": tt, "Fonte": sec} for mark, tt, sec in entrada_index}
+    saida_idx_map = {mark: {"t": tt, "Fonte": sec} for mark, tt, sec in saida_index}
+
+    # Mapear fonte -> (lista de tokens, key de marcador)
+    # OBS: precisa estar definido antes do primeiro uso (características de entrada/saída)
+    fonte_map: Dict[str, Tuple[List[dict], str]] = {
+        'Texto de Entrada Inicial': (TEXE_list, 'TEXE'),
+        'Fala de Entrada': (FADEN_list, 'FADEN'),
+        'Reação': (RE_list, 'RE'),
+        'Contexto': (CE_in_list, 'CE'),
+        'Texto Final de Entrada': (TEFIE_list, 'TEFIE'),
+        'Pensamento Interno': (PIDE_list, 'PIDE'),
+        'Texto Inicial de Saída': (TEXIS_list, 'TEXIS'),
+        'Fala de Saída': (FS_list, 'FS'),
+        'Reação de Saída': (RS_list, 'RS'),
+        'Contexto de Saída': (CE_out_list, 'CE'),
+        'Texto Final de Saída': (TEXFS_list, 'TEXFS'),
+    }
+
     def materializar_span(sp, index_list):
         inicio = sp["inicio"]; fim = sp["fim"]
         texts = []
@@ -636,28 +679,78 @@ def build_render(tpl):
         joined = re.sub(r"\s+([,.;:!?])", r"\1", joined)
         return fonte, joined
 
+    def collect_markers_in_range(tokens: List[dict], key: str, inicio: str, fim: str) -> List[str]:
+        arr = []
+        on = False
+        for tok in tokens:
+            if key not in tok:
+                continue
+            mk = tok[key]
+            if mk == inicio:
+                on = True
+            if on:
+                arr.append(mk)
+            if mk == fim:
+                break
+        return arr
+
+    def simplify_fonte_label(fonte: str) -> str:
+        """Converte fontes canônicas para rótulos concisos no UM."""
+        f = (fonte or '').strip()
+        mapping = {
+            'Texto de Entrada Inicial': 'Texto de entrada',
+            'Fala de Entrada': 'Fala de entrada',
+            'Reação': 'Reação',
+            'Contexto': 'Contexto',
+            'Texto Final de Entrada': 'Texto de entrada',
+            'Pensamento Interno': 'Pensamento interno',
+            'Texto Inicial de Saída': 'Texto de saída',
+            'Fala de Saída': 'Fala de saída',
+            'Reação de Saída': 'Reação de saída',
+            'Contexto de Saída': 'Contexto de saída',
+            'Texto Final de Saída': 'Texto de saída',
+        }
+        if f in mapping:
+            return mapping[f]
+        if 'Saída' in f:
+            return 'Texto de saída'
+        if 'Entrada' in f:
+            return 'Texto de entrada'
+        return f or 'Texto de entrada'
+
     caracteristicas_entrada = []
     for sp in cae_spans:
         fonte, toks = materializar_span(sp, entrada_index)
         # Sanitizar rótulo (remover ':' inicial, espaços)
         lbl = re.sub(r"^\s*:\s*", "", sp.get("label", "").strip())
-        caracteristicas_entrada.append({
+        # Identificar tokens list e chave (ex.: TEXE) a partir da fonte
+        toks_list, dado_key = fonte_map.get(fonte or "Texto de Entrada Inicial", (None, None))
+        marcadores = collect_markers_in_range(toks_list or [], dado_key or "", sp["inicio"], sp["fim"]) if toks_list and dado_key else []
+        entry = {
             "CAE": lbl,
-            "Fonte": fonte or "Entrada",
-            "range": {"inicio": sp["inicio"], "fim": sp["fim"]},
+            "Fonte": simplify_fonte_label(fonte or "Texto de Entrada Inicial"),
+            "Dado": dado_key,
             "Tokens": toks,
-        })
+        }
+        if dado_key:
+            entry[dado_key] = marcadores
+        caracteristicas_entrada.append(entry)
 
     caracteristicas_saida = []
     for sp in cas_spans:
         fonte, toks = materializar_span(sp, saida_index)
         lbl = re.sub(r"^\s*:\s*", "", sp.get("label", "").strip())
-        caracteristicas_saida.append({
+        toks_list, dado_key = fonte_map.get(fonte or "Texto Inicial de Saída", (None, None))
+        marcadores = collect_markers_in_range(toks_list or [], dado_key or "", sp["inicio"], sp["fim"]) if toks_list and dado_key else []
+        entry = {
             "CAS": lbl,
-            "Fonte": fonte or "Saída",
-            "range": {"inicio": sp["inicio"], "fim": sp["fim"]},
+            "Fonte": simplify_fonte_label(fonte or "Texto Inicial de Saída"),
+            "Dado": dado_key,
             "Tokens": toks,
-        })
+        }
+        if dado_key:
+            entry[dado_key] = marcadores
+        caracteristicas_saida.append(entry)
 
     # ---------- Multivars (inline + bloco Multivars:) ----------
     def normalize_fonte(s: str) -> str:
@@ -678,21 +771,6 @@ def build_render(tpl):
         }
         key = s0.casefold()
         return canon.get(key, s0)
-
-    # Mapear fonte -> (lista de tokens, key de marcador)
-    fonte_map: Dict[str, Tuple[List[dict], str]] = {
-        'Texto de Entrada Inicial': (TEXE_list, 'TEXE'),
-        'Fala de Entrada': (FADEN_list, 'FADEN'),
-        'Reação': (RE_list, 'RE'),
-        'Contexto': (CE_in_list, 'CE'),
-        'Texto Final de Entrada': (TEFIE_list, 'TEFIE'),
-        'Pensamento Interno': (PIDE_list, 'PIDE'),
-        'Texto Inicial de Saída': (TEXIS_list, 'TEXIS'),
-        'Fala de Saída': (FS_list, 'FS'),
-        'Reação de Saída': (RS_list, 'RS'),
-        'Contexto de Saída': (CE_out_list, 'CE'),
-        'Texto Final de Saída': (TEXFS_list, 'TEXFS'),
-    }
 
     def find_span(tokens: List[dict], key: str, text: str):
         if not tokens or not text:
@@ -827,33 +905,32 @@ def build_render(tpl):
 
     mv_entries = list(mv_entries_dict.values())
 
-    # Transformar Multivars em duas listas simples de frases (Entrada/Saída), com deduplicação
-    mv_frases_entrada: List[str] = []
-    mv_frases_saida: List[str] = []
-    seen_e = set()
-    seen_s = set()
+    # Duas listas de multivariações separadas por seção
+    mv_lista_entrada: List[dict] = []
+    mv_lista_saida: List[dict] = []
     for mv in mv_entries:
         fonte = mv.get("Fonte", "") or ""
         base = mv.get("text", "") or ""
         alts = mv.get("alternativas", []) or []
-        alvo_saida = ('Saída' in fonte)
-        alvo_list = mv_frases_saida if alvo_saida else mv_frases_entrada
-        alvo_seen = seen_s if alvo_saida else seen_e
-        # incluir base e alternativas
-        for t in ([base] + [a for a in alts if a]):
-            if not t:
-                continue
-            key = _canon_text(t)
-            if key in alvo_seen:
-                continue
-            alvo_seen.add(key)
-            alvo_list.append(t)
+        toks_list, dado_key = fonte_map.get(fonte, (None, None))
+        if not (toks_list and dado_key and mv.get('range')):
+            continue
+        inicio = mv['range'].get('inicio'); fim = mv['range'].get('fim')
+        marcadores = collect_markers_in_range(toks_list, dado_key, inicio, fim)
+        obj = {
+            "Fonte": simplify_fonte_label(fonte),
+            "Dado": dado_key,
+            "Tokens": base,
+            "Multivars:": alts if alts else ["0.0"],
+        }
+        obj[dado_key] = marcadores
+        # Classificar por seção de acordo com a fonte
+        if 'Saída' in fonte:
+            mv_lista_saida.append(obj)
+        else:
+            mv_lista_entrada.append(obj)
 
-    if not mv_frases_entrada:
-        mv_frases_entrada = ["0.0"]
-    if not mv_frases_saida:
-        mv_frases_saida = ["0.0"]
-
+    # Construção do UM com a ordem solicitada
     um = {
         "UM": {
             "0": {
@@ -862,11 +939,13 @@ def build_render(tpl):
                     {
                         "bloco_id": 1,
                         "Características de Entrada": caracteristicas_entrada,
-                        "Multivars de Entrada": mv_frases_entrada,
+                        "Lista de Multivariações de Entrada": mv_lista_entrada,
                         "Total de Entrada": Total_de_Entrada,
                         "ultimo_child_entrada": Total_de_Entrada[-1] if Total_de_Entrada else None,
                         "Características de Saída": caracteristicas_saida,
-                        "Multivars de Saída": mv_frases_saida,
+                        "Lista de Multivariações de Saída": mv_lista_saida,
+                        # Opcionalmente adicionamos o índice de tokens
+                        **({"Tokens por Marcador": {"Entrada": entrada_idx_map, "Saída": saida_idx_map}} if INCLUDE_TOKENS_INDEX_IN_UM else {}),
                         "Total de Saída": Total_de_Saida,
                         "ultimo_child_saida": Total_de_Saida[-1] if Total_de_Saida else None,
                         "alnulu_total_bloco": alnulu_total_bloco,
@@ -977,7 +1056,7 @@ def write_ida_modelo(ida_obj, fp, indent=2):
 # ---------------- main ----------------
 def main():
     print("Cole o bloco (termine com linha vazia):")
-    print("Comandos: :clear (limpar buffer), :clearjson (apagar JSONs), :exit (sair), :help (ver comandos), :compact (JSON minificado), :pretty (JSON identado), :modelo (arrays 1 obj/linha)")
+    print("Comandos: :clear (limpar buffer), :clearjson (apagar JSONs), :exit (sair), :help (ver comandos), :compact (JSON minificado), :pretty (JSON identado), :modelo (arrays 1 obj/linha), :umtokens (liga/desliga índice de tokens no UM)")
     print("Multivars: ao final, insira 'Multivars:' e linhas do tipo [Fonte] frase => alt1 || alt2 ...")
     lines = []
     compact_mode = False
@@ -987,7 +1066,12 @@ def main():
             ln = input()
             cmd = ln.strip().lower()
             if cmd in (":help", "/help", "help"):
-                print("Comandos disponíveis:\n  :clear      -> limpa o buffer atual e o console\n  :clearjson  -> apaga/trunca inconsciente.json e adam_memoria.json\n  :exit       -> sai do programa\n  :compact    -> salva JSON minificado (horizontal)\n  :pretty     -> salva JSON identado (padrão)\n  :modelo     -> arrays com 1 objeto por linha (modelo)\n  (Finalize o bloco com uma linha vazia)\n\nMultivars:\n  No final do bloco, use:\n  Multivars:\n  [Texto de Entrada Inicial] Era de manhã. => Havia amanhecido. || O dia havia começado.")
+                print("Comandos disponíveis:\n  :clear      -> limpa o buffer atual e o console\n  :clearjson  -> apaga/trunca inconsciente.json e adam_memoria.json\n  :exit       -> sai do programa\n  :compact    -> salva JSON minificado (horizontal)\n  :pretty     -> salva JSON identado (padrão)\n  :modelo     -> arrays com 1 objeto por linha (modelo)\n  :umtokens   -> liga/desliga índice de tokens no UM (associação marcador -> texto + Fonte)\n  (Finalize o bloco com uma linha vazia)\n\nMultivars no prompt (opcional):\n  No final do bloco, use:\n  Multivars:\n  [Texto de Entrada Inicial] Era de manhã. => Havia amanhecido. || O dia havia começado.\n\nMultivars inline (no texto):\n  Use [Multivars], [Multivars de entrada] ou [Multivars de saída] para abrir/fechar spans.\n  Se abrir e não fechar, o span vai até o fim da seção atual:\n    - Entrada: cobre TEXE..TEFIE (pode abranger toda a Entrada)\n    - Saída:   cobre TEXIS..TEXFS (pode abranger toda a Saída)")
+                continue
+            if cmd in (":umtokens", "/umtokens", "umtokens"):
+                global INCLUDE_TOKENS_INDEX_IN_UM
+                INCLUDE_TOKENS_INDEX_IN_UM = not INCLUDE_TOKENS_INDEX_IN_UM
+                print(f"Índice de tokens no UM: {'ativado' if INCLUDE_TOKENS_INDEX_IN_UM else 'desativado'}")
                 continue
             if cmd in (":clear", "/clear", "clear"):
                 lines = []
@@ -1063,6 +1147,8 @@ if __name__ == "__main__":
     except Exception:
         pass
     main()
+
+
 
 
 
