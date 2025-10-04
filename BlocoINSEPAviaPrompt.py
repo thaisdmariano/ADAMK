@@ -4,17 +4,51 @@
 BlocoINSEPAviaPrompt_final.py
 - Lê bloco por stdin (termine com linha vazia)
 - Gera inconsciente.json (texto no formato exato que você exigiu)
-- Gera adam_memoria.json (JSON válido) contendo alnulu_total_bloco e resumo do bloco
+- Gera adam_memoria.json (JSON válido) contendo alnulu_total_bloco, resumo do bloco e Multivars no IM (por bloco)
 - Coloca "Características de usuário" imediatamente após "Contexto"
 - Sem inferência: Características de usuário ficam em 0.0 se não fornecidas
 - ALNULU calculado a partir do conteúdo literal do bloco
 - Quando não houver TEXTO FINAL, emite o placeholder exigido:
   "TEXTO FINAL": [ { "TEXF":"0.0", "tokens": [ {"TEX":"0.0","t":"0.0","vars":["0.0"]} ] } ]
+- Multivars (paráfrases) ficam no IM, por bloco, como objetos:
+  {
+    "Fonte": "Texto de Entrada Inicial",
+    "range": { "inicio": "0.x", "fim": "0.y" },
+    "text": "Frase original",
+    "alternativas": ["Alt 1", "Alt 2"],
+    "meta": { opcional }
+  }
+
+Entrada de Multivars no prompt (opcional):
+- Ao final do bloco, insira:
+
+Multivars:
+[Texto de Entrada Inicial] Era de manhã. => Havia amanhecido. || O dia havia começado.
+[Fala de Saída] — Olá Socorro. => — Olá. || — Oi, Socorro.
+
+Observações:
+- As alternativas não geram marcadores até serem selecionadas em outro pipeline.
+- Caso não haja Multivars, o IM terá "Multivars": ["0.0"].
 """
 import re, sys, json, os
+import unicodedata
+from typing import List, Dict, Tuple
 
 OUT_IDA = "inconsciente.json"
 OUT_UM = "adam_memoria.json"
+
+# ---------------- Config de marcadores (janela reservada) ----------------
+# Parte/prefixo dos marcadores (ex.: "0" gera 0.1, 0.2, ...)
+WINDOW_PART = "0"
+# Tamanho da janela reservada por bloco (ex.: 59 => 0.1 até 0.59)
+WINDOW_MAX = 59
+# Enforce: True para limitar a janela e aplicar estratégia de overflow
+# Desativado: não impomos limite superior (sem 0.59), sequência é ilimitada.
+ENFORCE_WINDOW = False
+# Estratégia quando estourar a janela:
+#   - "error": aborta com mensagem
+#   - "overflow_to_900": usa 0.900, 0.901, ... sem afetar 0.1–0.59
+OVERFLOW_STRATEGY = "error"
 
 # ---------------- ALNULU ----------------
 def calcular_alnulu(texto: str) -> int:
@@ -60,17 +94,69 @@ def tokenize(s: str):
     )
     return re.findall(pattern, s.replace('"',''), re.UNICODE)
 
-def gen_markers(base: str, n: int):
-    part, _, suf = base.partition(".")
-    try:
-        cur = int(suf or "0")
-    except:
-        cur = 0
-    return [f"{part}.{cur+i+1}" for i in range(n)]
+def _strip_accents(s: str) -> str:
+    if not s:
+        return s
+    # NFD para decompor acentos e remover marcas combinantes
+    nf = unicodedata.normalize('NFD', s)
+    return ''.join(ch for ch in nf if unicodedata.category(ch) != 'Mn')
+
+def _canon_text(s: str) -> str:
+    """Normalização agressiva para matching: remove acentos, casefold, normaliza pontuação comum e espaços."""
+    if s is None:
+        return ''
+    s2 = s
+    # Substituições comuns
+    s2 = s2.replace('—', '-')
+    s2 = s2.replace('“', '"').replace('”', '"').replace('’', "'")
+    # Strip acentos e casefold
+    s2 = _strip_accents(s2).casefold()
+    # Normalizar espaços antes de pontuação
+    s2 = re.sub(r"\s+([,.;:!?])", r"\1", s2)
+    # Colapsar múltiplos espaços
+    s2 = re.sub(r"\s+", " ", s2).strip()
+    return s2
+
+# ---------------- parse Multivars (do prompt) ----------------
+def parse_multivars_from_lines(lines: List[str]):
+    """Extrai definições de Multivars a partir de um bloco opcional no input.
+    Sintaxe:
+    Multivars:
+    [Fonte] Frase original => Alt 1 || Alt 2 || Alt 3
+    """
+    in_mv = False
+    mv_lines: List[str] = []
+    filtered: List[str] = []
+    for ln in lines:
+        if not in_mv and re.match(r"^\s*Multivars\s*:\s*$", ln, re.I):
+            in_mv = True
+            continue
+        if in_mv:
+            mv_lines.append(ln)
+            continue
+        filtered.append(ln)
+
+    defs = []
+    for raw in mv_lines:
+        ln = raw.strip()
+        if not ln or ln.startswith('#'):
+            continue
+        m = re.match(r"^\s*\[(?P<fonte>[^\]]+)\]\s*(?P<text>.+?)\s*=>\s*(?P<alts>.+)$", ln)
+        if not m:
+            # linha fora do padrão; ignorar silenciosamente
+            continue
+        fonte = m.group('fonte').strip()
+        text = m.group('text').strip()
+        alts = [a.strip() for a in m.group('alts').split('||') if a.strip()]
+        if text and alts:
+            defs.append({"fonte": fonte, "text": text, "alternativas": alts})
+    return filtered, defs
 
 # ---------------- parse (pensamento non-greedy) ----------------
 def parse_block(lines):
-    txt = "\n".join(lines)
+    # Captura e remove bloco de Multivars do input (se houver)
+    norm_lines, multivars_defs = parse_multivars_from_lines(lines)
+    txt = "\n".join(norm_lines)
 
     def find_first(pat, flags=re.IGNORECASE | re.DOTALL):
         m = re.search(pat, txt, flags)
@@ -173,27 +259,38 @@ def parse_block(lines):
             "contexto": contexto_saida,
             "texto_final": texto_final_saida,
         },
+        "multivars_defs": multivars_defs,
         "raw": txt,
     }
 
-# ---------------- build & render (ordem garantida, placeholder TEXTO FINAL) ----------------
+# ---------------- build & render (ordem garantida) ----------------
 def build_render(tpl):
-    part = "0"
+    part = WINDOW_PART
 
-    # Detecta CAE/CAS a partir de tokens com colchetes, preservando rótulo como digitado
+    # Detecta CAE/CAS e Multivars a partir de tokens com colchetes, preservando rótulo digitado
     def detect_campo(token: str, saida: bool):
         raw = token.strip()
         low = raw.lower()
         if low.startswith('[') and low.endswith(']'):
             inside = raw[1:-1].strip()
-            # Padrão com prefixo (ex.: CAE: Estilo)
-            m = re.match(r'(?is)^(cae|cas)\s*:\s*(.+)$', inside)
+            # Padrão com prefixo (ex.: CAE: Estilo) e Multivars (abre/fecha)
+            m = re.match(r'(?is)^(cae|cas|multivars)\s*:??\s*(.*)$', inside)
             if m:
                 kind = m.group(1).upper()
                 label = m.group(2).strip()
-                # remover pontuação final comum
-                label = re.sub(r'[\s\.;:,]+$','', label)
-                return (kind, label)
+                if kind in ("CAE","CAS"):
+                    # remover pontuação final comum
+                    label = re.sub(r'[\s\.;:,]+$','', label)
+                    return (kind, label)
+                else:
+                    # Suportar variações como "Multivars de entrada" e "Multivars de saída/saida"
+                    inside_norm = _strip_accents(inside).casefold()
+                    if 'multivars' in inside_norm:
+                        if 'entrada' in inside_norm:
+                            return ("MV_IN", None)
+                        if 'saida' in inside_norm or 'saa' in inside_norm:
+                            return ("MV_OUT", None)
+                    return ("MV", None)
             # Padrões legados (fallback)
             legacy = inside.lower()
             if 'nome do user' in legacy:
@@ -210,15 +307,17 @@ def build_render(tpl):
     cur = 0
     def next_marks(n):
         nonlocal cur
-        marks = [f"{part}.{i}" for i in range(cur + 1, cur + n + 1)]
-        cur += n
+        marks = []
+        for _ in range(n):
+            cur += 1
+            marks.append(f"{part}.{cur}")
         return marks
 
     # Estados para spans (Entrada)
-    cae_active = {}          # canonical -> {display, start}
-    cae_pending_open = set() # canonical aguardando primeiro token para start
-    cae_display = {}         # canonical -> display (primeira forma vista)
-    cae_spans = []           # {label, inicio, fim}
+    cae_active = {}
+    cae_pending_open = set()
+    cae_display = {}
+    cae_spans = []
     last_mark_in = None
 
     # Estados para spans (Saída)
@@ -228,48 +327,80 @@ def build_render(tpl):
     cas_spans = []
     last_mark_out = None
 
+    # Estados Multivars inline
+    mv_in_pending_open = False
+    mv_in_active = False
+    mv_in_start = None
+    mv_spans_in = []
+
+    mv_out_pending_open = False
+    mv_out_active = False
+    mv_out_start = None
+    mv_spans_out = []
+
     # Helper: aplica rótulos por FAIXA entre marcadores pareados [CAE:X] ... [CAE:X]
     def emit_tokens(words, keyname: str, saida_flag: bool):
         out = []
-        # Active sets são globais por seção para manter spans contínuos
         nonlocal cae_active, cae_pending_open, cae_display, cae_spans, last_mark_in
         nonlocal cas_active, cas_pending_open, cas_display, cas_spans, last_mark_out
-        active_cae_keys = set(cae_active.keys())
-        active_cas_keys = set(cas_active.keys())
+        nonlocal mv_in_pending_open, mv_in_active, mv_in_start, mv_spans_in
+        nonlocal mv_out_pending_open, mv_out_active, mv_out_start, mv_spans_out
         for w in words:
             campo = detect_campo(w, saida=saida_flag)
             if campo:
                 kind, label = campo
-                canonical = label.casefold()
-                display = cae_display.get(canonical) if not saida_flag else cas_display.get(canonical)
-                if not display:
-                    if saida_flag:
-                        cas_display[canonical] = label
+                if kind in ('CAE','CAS'):
+                    canonical = label.casefold()
+                    display = cae_display.get(canonical) if not saida_flag else cas_display.get(canonical)
+                    if not display:
+                        if saida_flag:
+                            cas_display[canonical] = label
+                        else:
+                            cae_display[canonical] = label
+                        display = label
+                    # alterna (abre/fecha) a faixa daquele label por seção
+                    if kind == 'CAE' and not saida_flag:
+                        if canonical in cae_active:
+                            if last_mark_in is not None:
+                                cae_spans.append({"label": cae_active[canonical]["display"], "inicio": cae_active[canonical]["start"], "fim": last_mark_in})
+                            cae_active.pop(canonical, None)
+                            cae_pending_open.discard(canonical)
+                        else:
+                            cae_pending_open.add(canonical)
+                    elif kind == 'CAS' and saida_flag:
+                        if canonical in cas_active:
+                            if last_mark_out is not None:
+                                cas_spans.append({"label": cas_active[canonical]["display"], "inicio": cas_active[canonical]["start"], "fim": last_mark_out})
+                            cas_active.pop(canonical, None)
+                            cas_pending_open.discard(canonical)
+                        else:
+                            cas_pending_open.add(canonical)
+                elif kind in ('MV','MV_IN','MV_OUT'):
+                    # Toggle Multivars (entrada/saída explícito ou conforme seção atual)
+                    force_in = (kind == 'MV_IN')
+                    force_out = (kind == 'MV_OUT')
+                    target_out = force_out or (kind == 'MV' and saida_flag and not force_in)
+                    if not target_out:
+                        # Entrada
+                        if mv_in_active:
+                            if last_mark_in is not None:
+                                mv_spans_in.append({"inicio": mv_in_start, "fim": last_mark_in})
+                            mv_in_active = False
+                            mv_in_pending_open = False
+                            mv_in_start = None
+                        else:
+                            mv_in_pending_open = True
                     else:
-                        cae_display[canonical] = label
-                    display = label
-                # alterna (abre/fecha) a faixa daquele label por seção
-                if kind == 'CAE' and not saida_flag:
-                    if canonical in cae_active:
-                        # fechar: fim é o último mark de entrada
-                        if last_mark_in is not None:
-                            cae_spans.append({"label": cae_active[canonical]["display"], "inicio": cae_active[canonical]["start"], "fim": last_mark_in})
-                        cae_active.pop(canonical, None)
-                        if canonical in cae_pending_open:
-                            cae_pending_open.remove(canonical)
-                    else:
-                        # abrir: marca como pendente até o próximo token textual
-                        cae_pending_open.add(canonical)
-                elif kind == 'CAS' and saida_flag:
-                    if canonical in cas_active:
-                        if last_mark_out is not None:
-                            cas_spans.append({"label": cas_active[canonical]["display"], "inicio": cas_active[canonical]["start"], "fim": last_mark_out})
-                        cas_active.pop(canonical, None)
-                        if canonical in cas_pending_open:
-                            cas_pending_open.remove(canonical)
-                    else:
-                        cas_pending_open.add(canonical)
-                continue  # não emite token para marcador
+                        # Saída
+                        if mv_out_active:
+                            if last_mark_out is not None:
+                                mv_spans_out.append({"inicio": mv_out_start, "fim": last_mark_out})
+                            mv_out_active = False
+                            mv_out_pending_open = False
+                            mv_out_start = None
+                        else:
+                            mv_out_pending_open = True
+                continue
             # token textual real
             m = next_marks(1)[0]
             item = {keyname: m, "t": w, "vars": ["0.0"]}
@@ -282,23 +413,25 @@ def build_render(tpl):
                 for canon in list(cas_pending_open):
                     cas_active[canon] = {"display": cas_display[canon], "start": m}
                     cas_pending_open.remove(canon)
-            # aplica rótulos ativos do contexto adequado (dedup por canonical)
+            # abrir Multivars pendente
+            if not saida_flag and mv_in_pending_open:
+                mv_in_start = m
+                mv_in_active = True
+                mv_in_pending_open = False
+            if saida_flag and mv_out_pending_open:
+                mv_out_start = m
+                mv_out_active = True
+                mv_out_pending_open = False
+            # aplica rótulos ativos
             if not saida_flag and cae_active:
-                labels = []
-                for canon in sorted(cae_active.keys()):
-                    disp = cae_display.get(canon, cae_active[canon]["display"])
-                    labels.append(disp)
+                labels = [cae_display.get(c, cae_active[c]["display"]) for c in sorted(cae_active.keys())]
                 if labels:
                     item['cae'] = labels
             if saida_flag and cas_active:
-                labels = []
-                for canon in sorted(cas_active.keys()):
-                    disp = cas_display.get(canon, cas_active[canon]["display"])
-                    labels.append(disp)
+                labels = [cas_display.get(c, cas_active[c]["display"]) for c in sorted(cas_active.keys())]
                 if labels:
                     item['cas'] = labels
             out.append(item)
-            # atualizar último marker por seção
             if saida_flag:
                 last_mark_out = m
             else:
@@ -332,21 +465,16 @@ def build_render(tpl):
     if tefie_words:
         TEFIE_list = emit_tokens(tefie_words, "TEFIE", False)
 
-    # Pensamento Interno (frases -> PIDE) com extração de CAE dentro do pensamento
+    # Pensamento Interno
     PIDE_list = []
     pensamentos = tpl["entrada"].get("pensamento", "") or ""
     if pensamentos:
-        # normalizações: remover quebras de linha e aspas residuais
         pensamentos_norm = re.sub(r'[\r\n]+', ' ', pensamentos)
         pensamentos_norm = re.sub(r'["“”]+', '', pensamentos_norm)
-        # remover marcadores [CAE:/CAS:] do texto do pensamento
         pensamentos_clean = re.sub(r'(?is)\[\s*(?:cae|cas)\s*:\s*[^\]]+\]', '', pensamentos_norm)
-        # dividir em sentenças preservando pontuação
         parts = re.findall(r'[^.?!]+[.?!]|[^.?!]+$', pensamentos_clean)
         for raw in [p.strip() for p in parts if p.strip()]:
-            # normalizar espaços antes de pontuação
             clean_text = re.sub(r'\s+([,.;:!?])', r'\1', raw).strip()
-            # extrair labels CAE presentes (do texto original com marcadores), por sentença
             cae_labels = []
             for m in re.finditer(r'(?is)\[\s*cae\s*:\s*([^\]]+)\]', pensamentos_norm):
                 label = re.sub(r'[\s\.;:,]+$', '', m.group(1).strip())
@@ -401,6 +529,8 @@ def build_render(tpl):
         *[x["TEXFS"] for x in TEXFS_list],
     ]
 
+    # Sem limite superior: sequência de marcadores é ilimitada (0.1, 0.2, ...)
+
     # ALNULU do bloco
     alnulu_src = [
         tpl["entrada"].get("texto_inicial", ""),
@@ -424,6 +554,11 @@ def build_render(tpl):
     for canon, info in list(cas_active.items()):
         if last_mark_out is not None:
             cas_spans.append({"label": info["display"], "inicio": info["start"], "fim": last_mark_out})
+    # Fechar Multivars remanescentes
+    if mv_in_active and last_mark_in is not None:
+        mv_spans_in.append({"inicio": mv_in_start, "fim": last_mark_in})
+    if mv_out_active and last_mark_out is not None:
+        mv_spans_out.append({"inicio": mv_out_start, "fim": last_mark_out})
 
     ida = {
         "IDA": {
@@ -459,8 +594,7 @@ def build_render(tpl):
         }
     }
 
-    # Construir características para UM (adam_memoria)
-    # Mapear markers -> (texto, secao)
+    # Construir índices para materializar spans (texto por marcador)
     entrada_index = []  # (mark, t, secao)
     for tkn in TEXE_list:
         entrada_index.append((tkn["TEXE"], tkn["t"], "Texto de Entrada Inicial"))
@@ -499,15 +633,16 @@ def build_render(tpl):
             if mark == fim:
                 break
         joined = " ".join(texts).strip()
-        # Normalizar espaços antes de pontuação
         joined = re.sub(r"\s+([,.;:!?])", r"\1", joined)
         return fonte, joined
 
     caracteristicas_entrada = []
     for sp in cae_spans:
         fonte, toks = materializar_span(sp, entrada_index)
+        # Sanitizar rótulo (remover ':' inicial, espaços)
+        lbl = re.sub(r"^\s*:\s*", "", sp.get("label", "").strip())
         caracteristicas_entrada.append({
-            "CAE": sp["label"],
+            "CAE": lbl,
             "Fonte": fonte or "Entrada",
             "range": {"inicio": sp["inicio"], "fim": sp["fim"]},
             "Tokens": toks,
@@ -516,12 +651,208 @@ def build_render(tpl):
     caracteristicas_saida = []
     for sp in cas_spans:
         fonte, toks = materializar_span(sp, saida_index)
+        lbl = re.sub(r"^\s*:\s*", "", sp.get("label", "").strip())
         caracteristicas_saida.append({
-            "CAS": sp["label"],
+            "CAS": lbl,
             "Fonte": fonte or "Saída",
             "range": {"inicio": sp["inicio"], "fim": sp["fim"]},
             "Tokens": toks,
         })
+
+    # ---------- Multivars (inline + bloco Multivars:) ----------
+    def normalize_fonte(s: str) -> str:
+        s0 = (s or '').strip()
+        # Mapeamentos canônicos esperados no IM/UM
+        canon = {
+            'texto de entrada inicial': 'Texto de Entrada Inicial',
+            'fala de entrada': 'Fala de Entrada',
+            'reação': 'Reação',
+            'contexto': 'Contexto',
+            'texto final de entrada': 'Texto Final de Entrada',
+            'pensamento interno': 'Pensamento Interno',
+            'texto inicial de saída': 'Texto Inicial de Saída',
+            'fala de saída': 'Fala de Saída',
+            'reação de saída': 'Reação de Saída',
+            'contexto de saída': 'Contexto de Saída',
+            'texto final de saída': 'Texto Final de Saída',
+        }
+        key = s0.casefold()
+        return canon.get(key, s0)
+
+    # Mapear fonte -> (lista de tokens, key de marcador)
+    fonte_map: Dict[str, Tuple[List[dict], str]] = {
+        'Texto de Entrada Inicial': (TEXE_list, 'TEXE'),
+        'Fala de Entrada': (FADEN_list, 'FADEN'),
+        'Reação': (RE_list, 'RE'),
+        'Contexto': (CE_in_list, 'CE'),
+        'Texto Final de Entrada': (TEFIE_list, 'TEFIE'),
+        'Pensamento Interno': (PIDE_list, 'PIDE'),
+        'Texto Inicial de Saída': (TEXIS_list, 'TEXIS'),
+        'Fala de Saída': (FS_list, 'FS'),
+        'Reação de Saída': (RS_list, 'RS'),
+        'Contexto de Saída': (CE_out_list, 'CE'),
+        'Texto Final de Saída': (TEXFS_list, 'TEXFS'),
+    }
+
+    def find_span(tokens: List[dict], key: str, text: str):
+        if not tokens or not text:
+            return None
+        # Normalizar frase alvo
+        seq_tokens = tokenize(text)
+        if not seq_tokens:
+            return None
+        seq_norm = _canon_text(" ".join(seq_tokens))
+
+        # Preparar lista de tokens normalizados e também uma versão que ignora '?' isolado
+        tvals = [x['t'] for x in tokens]
+        tcanon = [_canon_text(t) for t in tvals]
+
+        # Janela deslizante: juntar tokens normalizados e comparar à frase alvo normalizada
+        L = len(tcanon)
+        # Limite máximo de extensão da janela: até o dobro do número de tokens alvo + 3 (para absorver '?')
+        max_win = max(1, len(seq_tokens) * 2 + 3)
+        for i in range(L):
+            joined = []
+            # Construir incrementalmente e fazer early break por comprimento
+            for j in range(i, min(L, i + max_win)):
+                tc = tcanon[j]
+                # Ignorar tokens que viraram apenas '?' após normalização
+                if tc == '?':
+                    continue
+                joined.append(tc)
+                cand = " ".join(joined)
+                # Pequena otimização: se cand excede muito o tamanho, podemos parar
+                if len(cand) > len(seq_norm) + 5:
+                    break
+                if cand == seq_norm:
+                    # Mapear de volta aos marcadores reais usando índices i..j (inclui tokens ignorados no meio)
+                    # Retroceder j real até último índice <= j que não foi apenas '?' para obter fim
+                    end_k = j
+                    # início no primeiro token considerado (i) ou avançar até primeiro não '?' real
+                    start_k = i
+                    # Ajustar início para pular tokens '?' isolados se existirem
+                    while start_k < L and _canon_text(tvals[start_k]) == '?':
+                        start_k += 1
+                    while end_k >= start_k and _canon_text(tvals[end_k]) == '?':
+                        end_k -= 1
+                    if start_k <= end_k:
+                        inicio = tokens[start_k][key]
+                        fim = tokens[end_k][key]
+                        return inicio, fim
+        return None
+
+    def collect_traits_in_range(tokens: List[dict], key: str, saida_flag: bool, inicio: str, fim: str):
+        """Varre tokens entre [inicio..fim] (inclusive) e agrega rótulos CAE/CAS ativos."""
+        traits = set()
+        on = False
+        lab_key = 'cas' if saida_flag else 'cae'
+        for tok in tokens:
+            if key not in tok:
+                continue
+            mk = tok[key]
+            if mk == inicio:
+                on = True
+            if on:
+                for lb in tok.get(lab_key, []) or []:
+                    traits.add(lb)
+            if mk == fim:
+                break
+        return sorted(traits)
+
+    def _mk_range_key(rng: dict) -> str:
+        return f"{rng.get('inicio','')}-{rng.get('fim','')}"
+
+    mv_entries_dict: Dict[str, dict] = {}
+
+    # a) Spans inline marcados com [Multivars]
+    def _add_mv_from_span(span: dict, idx_list, fonte_hint_saida: bool):
+        inicio = span["inicio"]; fim = span["fim"]
+        fonte_detect, text_mat = materializar_span({"inicio": inicio, "fim": fim}, idx_list)
+        if not fonte_detect:
+            fonte_detect = "Texto Inicial de Saída" if fonte_hint_saida else "Texto de Entrada Inicial"
+        toks_list, key = fonte_map.get(fonte_detect, (None, None))
+        if not toks_list:
+            return
+        saida_flag = 'Saída' in fonte_detect
+        traits_list = collect_traits_in_range(toks_list, key, saida_flag, inicio, fim)
+        traits_tipo = 'CAS' if saida_flag else 'CAE'
+        entry = {
+            "Fonte": fonte_detect,
+            "range": {"inicio": inicio, "fim": fim},
+            "text": text_mat,
+            "alternativas": [],
+            "traits": {"tipo": traits_tipo, "labels": traits_list},
+        }
+        mv_entries_dict[_mk_range_key(entry["range"])] = entry
+
+    for sp in mv_spans_in:
+        _add_mv_from_span(sp, entrada_index, False)
+    for sp in mv_spans_out:
+        _add_mv_from_span(sp, saida_index, True)
+
+    # b) Mesclar com bloco Multivars:
+    for d in tpl.get('multivars_defs', []) or []:
+        fonte_c = normalize_fonte(d.get('fonte'))
+        toks_list, key = fonte_map.get(fonte_c, (None, None))
+        if not toks_list:
+            continue
+        span = find_span(toks_list, key, d.get('text', ''))
+        if not span:
+            continue
+        inicio, fim = span
+        idx_list = saida_index if 'Saída' in fonte_c else entrada_index
+        _, text_mat = materializar_span({"inicio": inicio, "fim": fim}, idx_list)
+        saida_flag = 'Saída' in fonte_c
+        traits_list = collect_traits_in_range(toks_list, key, saida_flag, inicio, fim)
+        traits_tipo = 'CAS' if saida_flag else 'CAE'
+        rkey = _mk_range_key({"inicio": inicio, "fim": fim})
+        if rkey in mv_entries_dict:
+            ex = mv_entries_dict[rkey]
+            alts = ex.get("alternativas", [])
+            for a in d.get('alternativas', []) or []:
+                if a and a not in alts:
+                    alts.append(a)
+            ex["alternativas"] = alts
+            if not ex.get("text"):
+                ex["text"] = text_mat or d.get('text', '')
+            ex["traits"] = {"tipo": traits_tipo, "labels": traits_list}
+        else:
+            mv_entries_dict[rkey] = {
+                "Fonte": fonte_c,
+                "range": {"inicio": inicio, "fim": fim},
+                "text": text_mat or d.get('text', ''),
+                "alternativas": d.get('alternativas', []),
+                "traits": {"tipo": traits_tipo, "labels": traits_list},
+            }
+
+    mv_entries = list(mv_entries_dict.values())
+
+    # Transformar Multivars em duas listas simples de frases (Entrada/Saída), com deduplicação
+    mv_frases_entrada: List[str] = []
+    mv_frases_saida: List[str] = []
+    seen_e = set()
+    seen_s = set()
+    for mv in mv_entries:
+        fonte = mv.get("Fonte", "") or ""
+        base = mv.get("text", "") or ""
+        alts = mv.get("alternativas", []) or []
+        alvo_saida = ('Saída' in fonte)
+        alvo_list = mv_frases_saida if alvo_saida else mv_frases_entrada
+        alvo_seen = seen_s if alvo_saida else seen_e
+        # incluir base e alternativas
+        for t in ([base] + [a for a in alts if a]):
+            if not t:
+                continue
+            key = _canon_text(t)
+            if key in alvo_seen:
+                continue
+            alvo_seen.add(key)
+            alvo_list.append(t)
+
+    if not mv_frases_entrada:
+        mv_frases_entrada = ["0.0"]
+    if not mv_frases_saida:
+        mv_frases_saida = ["0.0"]
 
     um = {
         "UM": {
@@ -531,10 +862,11 @@ def build_render(tpl):
                     {
                         "bloco_id": 1,
                         "Características de Entrada": caracteristicas_entrada,
+                        "Multivars de Entrada": mv_frases_entrada,
                         "Total de Entrada": Total_de_Entrada,
                         "ultimo_child_entrada": Total_de_Entrada[-1] if Total_de_Entrada else None,
-                        "Multivars": ["0.0"],
                         "Características de Saída": caracteristicas_saida,
+                        "Multivars de Saída": mv_frases_saida,
                         "Total de Saída": Total_de_Saida,
                         "ultimo_child_saida": Total_de_Saida[-1] if Total_de_Saida else None,
                         "alnulu_total_bloco": alnulu_total_bloco,
@@ -646,6 +978,7 @@ def write_ida_modelo(ida_obj, fp, indent=2):
 def main():
     print("Cole o bloco (termine com linha vazia):")
     print("Comandos: :clear (limpar buffer), :clearjson (apagar JSONs), :exit (sair), :help (ver comandos), :compact (JSON minificado), :pretty (JSON identado), :modelo (arrays 1 obj/linha)")
+    print("Multivars: ao final, insira 'Multivars:' e linhas do tipo [Fonte] frase => alt1 || alt2 ...")
     lines = []
     compact_mode = False
     modelo_mode = False
@@ -654,7 +987,7 @@ def main():
             ln = input()
             cmd = ln.strip().lower()
             if cmd in (":help", "/help", "help"):
-                print("Comandos disponíveis:\n  :clear      -> limpa o buffer atual e o console\n  :clearjson  -> apaga/trunca inconsciente.json e adam_memoria.json\n  :exit       -> sai do programa\n  :compact    -> salva JSON minificado (horizontal)\n  :pretty     -> salva JSON identado (padrão)\n  :modelo     -> arrays com 1 objeto por linha (modelo)\n  (Finalize o bloco com uma linha vazia)")
+                print("Comandos disponíveis:\n  :clear      -> limpa o buffer atual e o console\n  :clearjson  -> apaga/trunca inconsciente.json e adam_memoria.json\n  :exit       -> sai do programa\n  :compact    -> salva JSON minificado (horizontal)\n  :pretty     -> salva JSON identado (padrão)\n  :modelo     -> arrays com 1 objeto por linha (modelo)\n  (Finalize o bloco com uma linha vazia)\n\nMultivars:\n  No final do bloco, use:\n  Multivars:\n  [Texto de Entrada Inicial] Era de manhã. => Havia amanhecido. || O dia havia começado.")
                 continue
             if cmd in (":clear", "/clear", "clear"):
                 lines = []
@@ -666,7 +999,6 @@ def main():
                 continue
             if cmd in (":clearjson", "/clearjson", "clearjson"):
                 try:
-                    # truncar/limpar arquivos JSON de saída
                     with open(OUT_IDA, 'w', encoding='utf-8') as f:
                         f.write("")
                     with open(OUT_UM, 'w', encoding='utf-8') as f:
@@ -721,6 +1053,15 @@ def main():
     print(f"alnulu_total_bloco: {alnulu_val}")
 
 if __name__ == "__main__":
+    # Garantir UTF-8 no stdin/stdout (Windows/PowerShell)
+    try:
+        sys.stdin.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
     main()
 
 
