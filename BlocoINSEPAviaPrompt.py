@@ -32,6 +32,15 @@ Observações:
         - Entrada: de TEXE até TEFIE
         - Saída: de TEXIS até TEXFS
     Assim, o Multivars pode cobrir toda a Entrada e toda a Saída quando deixado aberto.
+
+Marcadores abreviados (siglas):
+- Multivars de Entrada: use [Muden]  (equivale a [Multivars de entrada])
+- Multivars de Saída:   use [Mudsa]  (equivale a [Multivars de saída])
+- Ação de Entrada:      use [Ade]    (equivale a [Ação de entrada])
+- Ação de Saída:        use [Adsa]   (equivale a [Ação de saída])
+    Observação: também aceitamos [Ação] genérico (ou [Acao] sem acento) e as formas completas com/sem acento.
+    As marcações de [Ação] viram vars da Reação (RE/RS). Se houver emoji, anexamos as vars no RE/RS existente;
+    se não houver, criamos RE/RS sintético com t:"0.0" e as vars extraídas.
 """
 import re, sys, json, os
 import unicodedata
@@ -280,24 +289,39 @@ def build_render(tpl):
         low = raw.lower()
         if low.startswith('[') and low.endswith(']'):
             inside = raw[1:-1].strip()
-            # Padrão com prefixo (ex.: CAE: Estilo) e Multivars (abre/fecha)
-            m = re.match(r'(?is)^(cae|cas|multivars)\s*:??\s*(.*)$', inside)
+            # Primeiro, CAE/CAS com rótulo
+            m = re.match(r'(?is)^(cae|cas)\s*:??\s*(.*)$', inside)
             if m:
                 kind = m.group(1).upper()
                 label = m.group(2).strip()
-                if kind in ("CAE","CAS"):
-                    # remover pontuação final comum
-                    label = re.sub(r'[\s\.;:,]+$','', label)
-                    return (kind, label)
-                else:
-                    # Suportar variações como "Multivars de entrada" e "Multivars de saída/saida"
-                    inside_norm = _strip_accents(inside).casefold()
-                    if 'multivars' in inside_norm:
-                        if 'entrada' in inside_norm:
-                            return ("MV_IN", None)
-                        if 'saida' in inside_norm or 'saa' in inside_norm:
-                            return ("MV_OUT", None)
-                    return ("MV", None)
+                # remover pontuação final comum
+                label = re.sub(r'[\s\.;:,]+$','', label)
+                return (kind, label)
+            # Depois, normalizar para Multivars/Ação (com ou sem acento)
+            inside_norm = _strip_accents(inside).casefold()
+            # Remover pontuação final para suportar formas como [Muden:] etc.
+            inside_key = re.sub(r"[\s\.;:,]+$", "", inside_norm)
+            # Siglas (abreviações) dedicadas
+            if inside_key == 'muden':
+                return ("MV_IN", None)
+            if inside_key == 'mudsa':
+                return ("MV_OUT", None)
+            if inside_key == 'ade':
+                return ("AC_IN", None)
+            if inside_key == 'adsa':
+                return ("AC_OUT", None)
+            if 'multivars' in inside_norm:
+                if 'entrada' in inside_norm:
+                    return ("MV_IN", None)
+                if 'saida' in inside_norm:
+                    return ("MV_OUT", None)
+                return ("MV", None)
+            if 'acao' in inside_norm:
+                if 'entrada' in inside_norm:
+                    return ("AC_IN", None)
+                if 'saida' in inside_norm:
+                    return ("AC_OUT", None)
+                return ("AC", None)
             # Padrões legados (fallback)
             legacy = inside.lower()
             if 'nome do user' in legacy:
@@ -345,6 +369,17 @@ def build_render(tpl):
     mv_out_start = None
     mv_spans_out = []
 
+    # Estados Ação inline (variação de reação)
+    ac_in_pending_open = False
+    ac_in_active = False
+    ac_in_start = None
+    ac_spans_in = []
+
+    ac_out_pending_open = False
+    ac_out_active = False
+    ac_out_start = None
+    ac_spans_out = []
+
     # Primeiros e últimos marcadores (para cobrir toda a seção quando necessário)
     first_mark_in = None
     first_mark_out = None
@@ -356,6 +391,8 @@ def build_render(tpl):
         nonlocal cas_active, cas_pending_open, cas_display, cas_spans, last_mark_out
         nonlocal mv_in_pending_open, mv_in_active, mv_in_start, mv_spans_in
         nonlocal mv_out_pending_open, mv_out_active, mv_out_start, mv_spans_out
+        nonlocal ac_in_pending_open, ac_in_active, ac_in_start, ac_spans_in
+        nonlocal ac_out_pending_open, ac_out_active, ac_out_start, ac_spans_out
         nonlocal first_mark_in, first_mark_out
         for w in words:
             campo = detect_campo(w, saida=saida_flag)
@@ -412,6 +449,31 @@ def build_render(tpl):
                             mv_out_start = None
                         else:
                             mv_out_pending_open = True
+                elif kind in ('AC','AC_IN','AC_OUT'):
+                    # Toggle Ação (entrada/saída explícito ou conforme seção atual)
+                    force_in = (kind == 'AC_IN')
+                    force_out = (kind == 'AC_OUT')
+                    target_out = force_out or (kind == 'AC' and saida_flag and not force_in)
+                    if not target_out:
+                        # Entrada
+                        if ac_in_active:
+                            if last_mark_in is not None:
+                                ac_spans_in.append({"inicio": ac_in_start, "fim": last_mark_in})
+                            ac_in_active = False
+                            ac_in_pending_open = False
+                            ac_in_start = None
+                        else:
+                            ac_in_pending_open = True
+                    else:
+                        # Saída
+                        if ac_out_active:
+                            if last_mark_out is not None:
+                                ac_spans_out.append({"inicio": ac_out_start, "fim": last_mark_out})
+                            ac_out_active = False
+                            ac_out_pending_open = False
+                            ac_out_start = None
+                        else:
+                            ac_out_pending_open = True
                 continue
             # token textual real
             m = next_marks(1)[0]
@@ -439,6 +501,15 @@ def build_render(tpl):
                 mv_out_start = m
                 mv_out_active = True
                 mv_out_pending_open = False
+            # abrir Ação pendente
+            if not saida_flag and ac_in_pending_open:
+                ac_in_start = m
+                ac_in_active = True
+                ac_in_pending_open = False
+            if saida_flag and ac_out_pending_open:
+                ac_out_start = m
+                ac_out_active = True
+                ac_out_pending_open = False
             # aplica rótulos ativos
             if not saida_flag and cae_active:
                 labels = [cae_display.get(c, cae_active[c]["display"]) for c in sorted(cae_active.keys())]
@@ -582,6 +653,94 @@ def build_render(tpl):
     elif mv_out_pending_open and first_mark_out is not None and last_mark_out is not None:
         # Se foi aberto mas não ativado (sem tokens após o marcador), cobre toda a Saída
         mv_spans_out.append({"inicio": first_mark_out, "fim": last_mark_out})
+
+    # Fechar Ações remanescentes
+    if ac_in_active and last_mark_in is not None:
+        ac_spans_in.append({"inicio": ac_in_start, "fim": last_mark_in})
+    elif ac_in_pending_open and first_mark_in is not None and last_mark_in is not None:
+        ac_spans_in.append({"inicio": first_mark_in, "fim": last_mark_in})
+    if ac_out_active and last_mark_out is not None:
+        ac_spans_out.append({"inicio": ac_out_start, "fim": last_mark_out})
+    elif ac_out_pending_open and first_mark_out is not None and last_mark_out is not None:
+        ac_spans_out.append({"inicio": first_mark_out, "fim": last_mark_out})
+
+    # Materializar textos de Ação e anexar às Reações (RE/RS)
+    def _build_index_flat():
+        idx_in = []  # (mark, t)
+        for tkn in TEXE_list:
+            idx_in.append((tkn["TEXE"], tkn["t"]))
+        for tkn in FADEN_list:
+            idx_in.append((tkn["FADEN"], tkn["t"]))
+        for tkn in RE_list:
+            idx_in.append((tkn["RE"], tkn["t"]))
+        for tkn in CE_in_list:
+            idx_in.append((tkn["CE"], tkn["t"]))
+        for tkn in TEFIE_list:
+            idx_in.append((tkn["TEFIE"], tkn["t"]))
+        idx_out = []
+        for tkn in TEXIS_list:
+            idx_out.append((tkn["TEXIS"], tkn["t"]))
+        for tkn in FS_list:
+            idx_out.append((tkn["FS"], tkn["t"]))
+        for tkn in RS_list:
+            idx_out.append((tkn["RS"], tkn["t"]))
+        for tkn in CE_out_list:
+            idx_out.append((tkn["CE"], tkn["t"]))
+        for tkn in TEXFS_list:
+            idx_out.append((tkn["TEXFS"], tkn["t"]))
+        return idx_in, idx_out
+
+    def _mat_text(index_flat, inicio, fim):
+        on = False
+        parts = []
+        for mk, tt in index_flat:
+            if mk == inicio:
+                on = True
+            if on:
+                parts.append(tt)
+            if mk == fim:
+                break
+        txt = " ".join(parts).strip()
+        return re.sub(r"\s+([,.;:!?])", r"\1", txt)
+
+    idx_in_flat, idx_out_flat = _build_index_flat()
+    ac_texts_in = []
+    for sp in ac_spans_in:
+        ac_texts_in.append(_mat_text(idx_in_flat, sp["inicio"], sp["fim"]))
+    ac_texts_out = []
+    for sp in ac_spans_out:
+        ac_texts_out.append(_mat_text(idx_out_flat, sp["inicio"], sp["fim"]))
+
+    def _attach_actions_to_re(re_list, actions, key):
+        acts = [a for a in (actions or []) if a]
+        if not acts:
+            return
+        uniq = sorted({a for a in acts})
+        if re_list:
+            re_list[0]["vars"] = uniq
+        else:
+            synth = next_marks(1)[0]
+            re_list.append({key: synth, "t": "0.0", "vars": uniq})
+
+    _attach_actions_to_re(RE_list, ac_texts_in, "RE")
+    _attach_actions_to_re(RS_list, ac_texts_out, "RS")
+
+    # Recalcular Totais após possível criação de RE/RS sintéticos
+    Total_de_Entrada = [
+        *[x["TEXE"] for x in TEXE_list],
+        *[x["FADEN"] for x in FADEN_list],
+        *[x["RE"] for x in RE_list],
+        *[x["CE"] for x in CE_in_list],
+        *[x["TEFIE"] for x in TEFIE_list],
+        *[p["PIDE"] for p in PIDE_list],
+    ]
+    Total_de_Saida = [
+        *[x["TEXIS"] for x in TEXIS_list],
+        *[x["FS"] for x in FS_list],
+        *[x["RS"] for x in RS_list],
+        *[x["CE"] for x in CE_out_list],
+        *[x["TEXFS"] for x in TEXFS_list],
+    ]
 
     ida = {
         "IDA": {
@@ -1066,7 +1225,7 @@ def main():
             ln = input()
             cmd = ln.strip().lower()
             if cmd in (":help", "/help", "help"):
-                print("Comandos disponíveis:\n  :clear      -> limpa o buffer atual e o console\n  :clearjson  -> apaga/trunca inconsciente.json e adam_memoria.json\n  :exit       -> sai do programa\n  :compact    -> salva JSON minificado (horizontal)\n  :pretty     -> salva JSON identado (padrão)\n  :modelo     -> arrays com 1 objeto por linha (modelo)\n  :umtokens   -> liga/desliga índice de tokens no UM (associação marcador -> texto + Fonte)\n  (Finalize o bloco com uma linha vazia)\n\nMultivars no prompt (opcional):\n  No final do bloco, use:\n  Multivars:\n  [Texto de Entrada Inicial] Era de manhã. => Havia amanhecido. || O dia havia começado.\n\nMultivars inline (no texto):\n  Use [Multivars], [Multivars de entrada] ou [Multivars de saída] para abrir/fechar spans.\n  Se abrir e não fechar, o span vai até o fim da seção atual:\n    - Entrada: cobre TEXE..TEFIE (pode abranger toda a Entrada)\n    - Saída:   cobre TEXIS..TEXFS (pode abranger toda a Saída)")
+                print("Comandos disponíveis:\n  :clear      -> limpa o buffer atual e o console\n  :clearjson  -> apaga/trunca inconsciente.json e adam_memoria.json\n  :exit       -> sai do programa\n  :compact    -> salva JSON minificado (horizontal)\n  :pretty     -> salva JSON identado (padrão)\n  :modelo     -> arrays com 1 objeto por linha (modelo)\n  :umtokens   -> liga/desliga índice de tokens no UM (associação marcador -> texto + Fonte)\n  (Finalize o bloco com uma linha vazia)\n\nMultivars no prompt (opcional):\n  No final do bloco, use:\n  Multivars:\n  [Texto de Entrada Inicial] Era de manhã. => Havia amanhecido. || O dia havia começado.\n\nMultivars inline (no texto):\n  Use [Multivars], [Multivars de entrada] ou [Multivars de saída] para abrir/fechar spans.\n  Siglas equivalentes: [Muden] (entrada) e [Mudsa] (saída).\n\nAção inline (variação de Reação):\n  Use [Ação], [Ação de entrada] ou [Ação de saída] (aceita [Acao] sem acento).\n  Siglas equivalentes: [Ade] (entrada) e [Adsa] (saída).\n  Se houver emoji em RE/RS ele permanece; as frases em [Ação] viram vars.\n  Se não houver emoji, criamos RE/RS sintético com t:\"0.0\" e vars extraídas.\n\nSe abrir e não fechar um span, ele vai até o fim da seção atual:\n  - Entrada: cobre TEXE..TEFIE (pode abranger toda a Entrada)\n  - Saída:   cobre TEXIS..TEXFS (pode abranger toda a Saída)")
                 continue
             if cmd in (":umtokens", "/umtokens", "umtokens"):
                 global INCLUDE_TOKENS_INDEX_IN_UM
@@ -1147,6 +1306,7 @@ if __name__ == "__main__":
     except Exception:
         pass
     main()
+
 
 
 
