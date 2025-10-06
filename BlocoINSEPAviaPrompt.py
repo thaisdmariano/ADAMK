@@ -53,6 +53,48 @@ OUT_UM = "adam_memoria.json"
 # Mantém a associação direta sem precisar consultar o IDA.
 INCLUDE_TOKENS_INDEX_IN_UM = False
 
+# ---------------- Termômetro: pesos e utilidades ----------------
+# Pesos por componente (total 100 por seção)
+THERM_WEIGHTS = {
+    "entrada": {"TEXE": 15, "FADEN": 15, "TEFIE": 15, "RE": 25, "CE": 30},
+    "saida":   {"TEXIS": 15, "FS": 15, "TEXFS": 15, "RS": 25, "CS": 30},  # Contexto de Saída é CS
+}
+
+# Penalização aplicada a cada componente marcado como Neutro (0)
+# Ideia: uma interação excessivamente neutra não deve atingir 50 por padrão; cada 0 reduz levemente o score.
+NEUTRAL_PENALTY = 6
+
+def therm_bucket(score_0_100: int):
+    """Mapeia score (0..100) para o bucket e rótulo do termômetro.
+    Faixas: 100/70/50/40/0 conforme definição do usuário.
+    """
+    if score_0_100 >= 85:
+        return 100, "Positivo"
+    if score_0_100 >= 60:
+        return 70, "Levemente positivo"
+    if score_0_100 >= 50:
+        return 50, "Neutro"
+    if score_0_100 >= 40:
+        return 40, "Negativo"
+    return 0, "Negativo grave"
+
+def therm_score_from_signs(signs: dict, weights: dict):
+    """Calcula score 0..100 a partir de sinais {-1,0,1} e pesos.
+    - signs: ex. {"TEXE":1, "FADEN":-1, "TEFIE":0, "RE":1, "CE":-1}
+    - weights: pesos correspondentes (somam 100 por seção)
+    - Neutro (0) aplica uma penalização leve fixa (NEUTRAL_PENALTY) por componente
+    Retorna: (score_0_100, (bucket, label))
+    """
+    sitems = (signs or {}).items()
+    pos = sum(weights.get(k, 0) for k, v in sitems if v > 0)
+    neg = sum(weights.get(k, 0) for k, v in sitems if v < 0)
+    neu_count = sum(1 for k, v in sitems if v == 0 and k in weights)
+    # Net em unidades de peso, com penalização leve para neutros
+    net = pos - neg - (neu_count * NEUTRAL_PENALTY)  # ~[-130..+100]
+    score = int(round(50 + net / 2.0))
+    score = max(0, min(100, score))
+    return score, therm_bucket(score)
+
 # ---------------- Config de marcadores (janela reservada) ----------------
 # Parte/prefixo dos marcadores (ex.: "0" gera 0.1, 0.2, ...)
 WINDOW_PART = "0"
@@ -168,10 +210,86 @@ def parse_multivars_from_lines(lines: List[str]):
             defs.append({"fonte": fonte, "text": text, "alternativas": alts})
     return filtered, defs
 
+# ---------------- parse Sentimento (sinais manuais) ----------------
+def parse_sentimento_from_lines(lines: List[str]):
+    """Extrai bloco opcional de Sentimento com sinais por componente.
+    Sintaxe esperada (flexível a espaços/maiúsculas):
+
+    Sentimento:
+    Entrada: TEXE=+, FADEN=-, TEFIE=0, RE=+, CE=-
+    Saída:   TEXIS=+, FS=0, TEXFS=+, RS=+, CE=-
+
+    Também aceita 'E:'/'S:' e 'Saida'. Em Saída, 'CS' é aceito como alias de 'CE'.
+    """
+    in_sent = False
+    sent_lines: List[str] = []
+    filtered: List[str] = []
+    for ln in lines:
+        if not in_sent and re.match(r"^\s*Sentimento\s*:\s*$", ln, re.I):
+            in_sent = True
+            continue
+        if in_sent:
+            # termina ao encontrar uma linha vazia isolada ou um novo bloco iniciando com palavra e ':'
+            if re.match(r"^\s*$", ln):
+                # permitimos linhas vazias dentro do bloco; continue coletando
+                sent_lines.append(ln)
+                continue
+            sent_lines.append(ln)
+            continue
+        filtered.append(ln)
+
+    def _parse_line(s: str):
+        m = re.match(r"^\s*(Entrada|E)\s*:\s*(.*)$", s, re.I)
+        if m:
+            side = 'entrada'
+            rest = m.group(2)
+        else:
+            m = re.match(r"^\s*(Sa[ií]da|S)\s*:\s*(.*)$", s, re.I)
+            if not m:
+                return None
+            side = 'saida'
+            rest = m.group(2)
+        # Ex.: TEXE=+, FADEN=-, TEFIE=0, RE=+, CE=-
+        pairs = re.split(r",\s*", rest.strip()) if rest.strip() else []
+        d = {}
+        for p in pairs:
+            mm = re.match(r"^\s*([A-Za-z]+)\s*=\s*([+\-0])\s*$", p)
+            if not mm:
+                continue
+            key = mm.group(1).upper()
+            val = mm.group(2)
+            # normalizar chaves para as usadas internamente, respeitando o lado
+            if side == 'entrada':
+                # Em Entrada, aceitamos 'CS' como alias digitado por engano e mapeamos para 'CE'
+                k = 'CE' if key == 'CS' else key
+            else:
+                # Em Saída, aceitamos 'CE' como alias e mapeamos para 'CS'
+                k = 'CS' if key == 'CE' else key
+            sign = 1 if val == '+' else (-1 if val == '-' else 0)
+            d[k] = sign
+        return side, d
+
+    entrada_signs = {}
+    saida_signs = {}
+    for raw in sent_lines:
+        ln = raw.strip()
+        if not ln or ln.lower() == 'sentimento:':
+            continue
+        parsed = _parse_line(ln)
+        if not parsed:
+            continue
+        side, d = parsed
+        if side == 'entrada':
+            entrada_signs.update(d)
+        else:
+            saida_signs.update(d)
+    return filtered, {"entrada": entrada_signs, "saida": saida_signs}
+
 # ---------------- parse (pensamento non-greedy) ----------------
 def parse_block(lines):
-    # Captura e remove bloco de Multivars do input (se houver)
-    norm_lines, multivars_defs = parse_multivars_from_lines(lines)
+    # Captura e remove blocos opcionais (Sentimento, Multivars) do input (se houver)
+    norm_lines0, sentimento_signs = parse_sentimento_from_lines(lines)
+    norm_lines, multivars_defs = parse_multivars_from_lines(norm_lines0)
     txt = "\n".join(norm_lines)
 
     def find_first(pat, flags=re.IGNORECASE | re.DOTALL):
@@ -276,6 +394,7 @@ def parse_block(lines):
             "texto_final": texto_final_saida,
         },
         "multivars_defs": multivars_defs,
+        "sentimento_signs": sentimento_signs,
         "raw": txt,
     }
 
@@ -715,12 +834,12 @@ def build_render(tpl):
         acts = [a for a in (actions or []) if a]
         if not acts:
             return
-        uniq = sorted({a for a in acts})
+        # Preserva ordem e duplicatas (sem deduplicação/ordenação)
         if re_list:
-            re_list[0]["vars"] = uniq
+            re_list[0]["vars"] = acts
         else:
             synth = next_marks(1)[0]
-            re_list.append({key: synth, "t": "0.0", "vars": uniq})
+            re_list.append({key: synth, "t": "0.0", "vars": acts})
 
     _attach_actions_to_re(RE_list, ac_texts_in, "RE")
     _attach_actions_to_re(RS_list, ac_texts_out, "RS")
@@ -742,6 +861,28 @@ def build_render(tpl):
         *[x["TEXFS"] for x in TEXFS_list],
     ]
 
+    # ---------- Sentimento (base por pesos com sinais manuais) ----------
+    s_signs = tpl.get("sentimento_signs", {}) or {}
+    ent_signs = s_signs.get("entrada", {}) or {}
+    sai_signs = s_signs.get("saida", {}) or {}
+
+    # Defaults neutros (sem sinais): score=50, bucket=50, label="Neutro"
+    scoreE, bucketE, labelE = 50, 50, "Neutro"
+    scoreS, bucketS, labelS = 50, 50, "Neutro"
+    if ent_signs:
+        scoreE, (bucketE, labelE) = therm_score_from_signs(ent_signs, THERM_WEIGHTS["entrada"])
+    if sai_signs:
+        # Mapear eventuais 'CE' para 'CS' antes de aplicar os pesos
+        sai_norm = { ("CS" if k == "CE" else k): v for k, v in sai_signs.items() }
+        scoreS, (bucketS, labelS) = therm_score_from_signs(sai_norm, THERM_WEIGHTS["saida"])
+
+    # Objetos enxutos (sem redundâncias):
+    # - SDE/SDS: string com o score
+    # - t: rótulo do bucket
+    # - Tendência: bucket numérico (Entrada/Saída)
+    sde_obj = {"SDE": str(scoreE), "t": labelE, "Tendência de Entrada": bucketE}
+    sds_obj = {"SDS": str(scoreS), "t": labelS, "Tendência da Saída": bucketS}
+
     ida = {
         "IDA": {
             "IM": {
@@ -756,7 +897,7 @@ def build_render(tpl):
                                 "Reação": RE_list,
                                 "Texto Final de Entrada": TEFIE_list,
                                 "Contexto": CE_in_list,
-                                "Sentimento de Entrada": {"SDE": "0.0", "t": "Neutro", "Tendência de Entrada": 0.0},
+                                "Sentimento de Entrada": sde_obj,
                             },
                             "Pensamento Interno": PIDE_list,
                             "Total de Entrada": Total_de_Entrada,
@@ -767,7 +908,9 @@ def build_render(tpl):
                                 "Texto Final de Saída": TEXFS_list,
                                 "Contexto de Saída": CE_out_list,
                             },
-                            "Sentimento da Saída": {"SDS": "0.0", "t": "Neutro", "Tendência da Saída": 0.0, "Ressonância": False},
+                            # Sentimentos (compactos) e Ressonância no nível do bloco (mesmo bucket)
+                            "Sentimento da Saída": sds_obj,
+                            "Ressonância": (bucketE == bucketS),
                             "Total de Saída": Total_de_Saida,
                         }
                     ],
@@ -1216,7 +1359,7 @@ def write_ida_modelo(ida_obj, fp, indent=2):
 def main():
     print("Cole o bloco (termine com linha vazia):")
     print("Comandos: :clear (limpar buffer), :clearjson (apagar JSONs), :exit (sair), :help (ver comandos), :compact (JSON minificado), :pretty (JSON identado), :modelo (arrays 1 obj/linha), :umtokens (liga/desliga índice de tokens no UM)")
-    print("Multivars: ao final, insira 'Multivars:' e linhas do tipo [Fonte] frase => alt1 || alt2 ...")
+    print("Multivars: ao final do bloco, insira 'Multivars:' e linhas do tipo [Fonte] frase => alt1 || alt2 ...")
     lines = []
     compact_mode = False
     modelo_mode = False
@@ -1225,7 +1368,7 @@ def main():
             ln = input()
             cmd = ln.strip().lower()
             if cmd in (":help", "/help", "help"):
-                print("Comandos disponíveis:\n  :clear      -> limpa o buffer atual e o console\n  :clearjson  -> apaga/trunca inconsciente.json e adam_memoria.json\n  :exit       -> sai do programa\n  :compact    -> salva JSON minificado (horizontal)\n  :pretty     -> salva JSON identado (padrão)\n  :modelo     -> arrays com 1 objeto por linha (modelo)\n  :umtokens   -> liga/desliga índice de tokens no UM (associação marcador -> texto + Fonte)\n  (Finalize o bloco com uma linha vazia)\n\nMultivars no prompt (opcional):\n  No final do bloco, use:\n  Multivars:\n  [Texto de Entrada Inicial] Era de manhã. => Havia amanhecido. || O dia havia começado.\n\nMultivars inline (no texto):\n  Use [Multivars], [Multivars de entrada] ou [Multivars de saída] para abrir/fechar spans.\n  Siglas equivalentes: [Muden] (entrada) e [Mudsa] (saída).\n\nAção inline (variação de Reação):\n  Use [Ação], [Ação de entrada] ou [Ação de saída] (aceita [Acao] sem acento).\n  Siglas equivalentes: [Ade] (entrada) e [Adsa] (saída).\n  Se houver emoji em RE/RS ele permanece; as frases em [Ação] viram vars.\n  Se não houver emoji, criamos RE/RS sintético com t:\"0.0\" e vars extraídas.\n\nSe abrir e não fechar um span, ele vai até o fim da seção atual:\n  - Entrada: cobre TEXE..TEFIE (pode abranger toda a Entrada)\n  - Saída:   cobre TEXIS..TEXFS (pode abranger toda a Saída)")
+                print("Comandos disponíveis:\n  :clear      -> limpa o buffer atual e o console\n  :clearjson  -> apaga/trunca inconsciente.json e adam_memoria.json\n  :exit       -> sai do programa\n  :compact    -> salva JSON minificado (horizontal)\n  :pretty     -> salva JSON identado (padrão)\n  :modelo     -> arrays com 1 objeto por linha (modelo)\n  :umtokens   -> liga/desliga índice de tokens no UM (associação marcador -> texto + Fonte)\n  (Finalize o bloco com uma linha vazia)\n\nMultivars no prompt (opcional):\n  No final do bloco, use:\n  Multivars:\n  [Texto de Entrada Inicial] Era de manhã. => Havia amanhecido. || O dia havia começado.\n\nMultivars inline (no texto):\n  Use [Multivars], [Multivars de entrada] ou [Multivars de saída] para abrir/fechar spans.\n  Siglas equivalentes: [Muden] (entrada) e [Mudsa] (saída).\n\nAção inline (variação de Reação):\n  Use [Ação], [Ação de entrada] ou [Ação de saída] (aceita [Acao] sem acento).\n  Siglas equivalentes: [Ade] (entrada) e [Adsa] (saída).\n  Se houver emoji em RE/RS ele permanece; as frases em [Ação] viram vars.\n  Se não houver emoji, criamos RE/RS sintético com t:\"0.0\" e vars extraídas.\n\nSentimento (opcional, sinais manuais):\n  Bloco 'Sentimento:' permite marcar + / - / 0 por componente para o cálculo do termômetro (0..100). Ex.:\n  Sentimento:\n  Entrada: TEXE=+, FADEN=-, TEFIE=+, RE=+, CE=-\n  Saída:   TEXIS=+, FS=0, TEXFS=+, RS=+, CS=-\n  Pesos: TEXE/FADEN/TEFIE=15, RE=25, CE=30 (entrada) | TEXIS/FS/TEXFS=15, RS=25, CS=30 (saída).\n  Neutro (0) aplica uma penalização leve (~6 pontos) por componente, evitando 100% de neutralidade.\n\nSe abrir e não fechar um span, ele vai até o fim da seção atual:\n  - Entrada: cobre TEXE..TEFIE (pode abranger toda a Entrada)\n  - Saída:   cobre TEXIS..TEXFS (pode abranger toda a Saída)")
                 continue
             if cmd in (":umtokens", "/umtokens", "umtokens"):
                 global INCLUDE_TOKENS_INDEX_IN_UM
@@ -1277,6 +1420,41 @@ def main():
         pass
 
     tpl = parse_block(lines)
+    # Se não houver sinais suficientes no bloco Sentimento:, perguntar interativamente
+    try:
+        s_signs = tpl.get("sentimento_signs", {}) or {}
+        ent_signs = s_signs.get("entrada", {}) or {}
+        sai_signs = s_signs.get("saida", {}) or {}
+
+        def _ask_one(prompt: str) -> int:
+            while True:
+                resp = input(f"{prompt} (+/0/-) [Enter=0]: ").strip().lower()
+                if resp in ("", "0", "neutro", "neu", "ntr"):
+                    return 0
+                if resp in ("+", "p", "pos", "positivo", "+1"):
+                    return 1
+                if resp in ("-", "n", "neg", "negativo", "-1"):
+                    return -1
+                print("Por favor, responda com '+', '0' ou '-'.")
+
+        ordem_ent = ["TEXE", "FADEN", "TEFIE", "RE", "CE"]
+        ordem_sai = ["TEXIS", "FS", "TEXFS", "RS", "CS"]
+
+        if any(k not in ent_signs for k in ordem_ent):
+            print("\nClassifique o Sentimento da ENTRADA:")
+            for k in ordem_ent:
+                if k not in ent_signs:
+                    ent_signs[k] = _ask_one(f"  {k}")
+
+        if any(k not in sai_signs for k in ordem_sai):
+            print("\nClassifique o Sentimento da SAÍDA:")
+            for k in ordem_sai:
+                if k not in sai_signs:
+                    sai_signs[k] = _ask_one(f"  {k}")
+
+        tpl["sentimento_signs"] = {"entrada": ent_signs, "saida": sai_signs}
+    except Exception:
+        pass
     ida, um, total_ent, total_sai, alnulu_val = build_render(tpl)
 
     with open(OUT_IDA, "w", encoding="utf-8") as f:
@@ -1306,6 +1484,7 @@ if __name__ == "__main__":
     except Exception:
         pass
     main()
+
 
 
 
