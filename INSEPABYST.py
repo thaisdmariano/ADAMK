@@ -1,350 +1,524 @@
+import streamlit as st
 import json
 import os
 import re
-from typing import List, Dict
 
-import streamlit as st
+# =============================================
+#Passo 1: Criar o cabeçalho#
+# [PASSO-1] Criar o cabeçalho
+# =============================================
+# Cabeçalho mínimo (sem CRUD, sem parser)
+st.set_page_config(page_title="INSEPA — IDA/IM (CRUD)", layout="wide")
+st.title("INSEPA — IDA/IM (CRUD: renomear)")
 
-OUT_IDA = os.path.join(os.path.dirname(__file__), '..', 'inconsciente.json')
-OUT_UM = os.path.join(os.path.dirname(__file__), '..', 'adam_memoria.json')
+st.info("App mínimo carregado. Próximo passo: definir exatamente o que entra no cabeçalho.")
 
-st.set_page_config(page_title="INSEPA - Navegador IDA/UM", layout="wide")
-st.title("INSEPA - Navegador IDA/UM")
+# ===== FIM do PASSO 1 =====
 
-@st.cache_data
-def load_json(path: str) -> Dict:
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            txt = f.read().strip()
-            return json.loads(txt) if txt else {}
-    except Exception:
-        return {}
 
-def _save_json(path: str, data: Dict, pretty: bool = True):
-    try:
-        with open(path, 'w', encoding='utf-8') as f:
-            if pretty:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            else:
-                json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
-        return True
-    except Exception:
-        return False
+# =============================================
+#Passo 2: CRUD de IM (renomear)#
+# [PASSO-2] Renomear IM em inconsciente.json
+# =============================================
 
-def _merge_blocks(ida_cur: Dict, um_cur: Dict, im_key: str, novos_blocos: List[Dict], novo_nome: str | None = None) -> tuple:
-    ida_cur = ida_cur or {}
-    um_cur = um_cur or {}
-    ida_cur.setdefault('IDA', {}).setdefault('IM', {})
-    um_cur.setdefault('UM', {})
-    # IDA
-    IM = ida_cur['IDA']['IM']
-    node = IM.setdefault(str(im_key), {"nome": novo_nome or IM.get(str(im_key), {}).get('nome', ''), "blocos": []})
-    if novo_nome:
-        node['nome'] = novo_nome
-    node.setdefault('blocos', [])
-    existing_ids = []
-    for b in node['blocos']:
-        try:
-            existing_ids.append(int(b.get('bloco_id')))
-        except Exception:
-            pass
-    next_id = (max(existing_ids) + 1) if existing_ids else 1
-    used = set(existing_ids)
-    for b in novos_blocos:
-        bid = None
-        try:
-            bid = int(b.get('bloco_id'))
-        except Exception:
-            bid = None
-        if bid is None or bid <= 0 or bid in used:
-            bid = next_id
-            next_id += 1
-        used.add(bid)
-        b['bloco_id'] = bid
-        node['blocos'].append(b)
-    # UM (cabeçalho)
-    um_node = um_cur['UM'].setdefault(str(im_key), {"Universo Mãe": node.get('nome') or novo_nome or "Interações", "blocos": []})
-    if node.get('nome'):
-        um_node['Universo Mãe'] = node['nome']
-    um_node.setdefault('blocos', [])
-    return ida_cur, um_cur
+# Caminho do arquivo (pasta pai de app_streamlit)
+_BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+_OUT_IDA = os.path.join(_BASE_DIR, "inconsciente.json")
+_OUT_UM = os.path.join(_BASE_DIR, "memoria.json")
 
-def _update_block_raw(ida_cur: Dict, im_key: str, bloco_id: int, novo_raw: str) -> Dict:
-    """Atualiza o campo 'Bloco (raw)' de um bloco existente pelo bloco_id dentro de um IM específico."""
-    ida_cur = ida_cur or {}
-    try:
-        bid = int(bloco_id)
-    except Exception:
-        return ida_cur
-    im_node = ((ida_cur.get('IDA') or {}).get('IM') or {}).get(str(im_key))
-    if not im_node:
-        return ida_cur
-    blocos = im_node.get('blocos') or []
-    for b in blocos:
-        try:
-            if int(b.get('bloco_id')) == bid:
-                b['Bloco (raw)'] = novo_raw
-                break
-        except Exception:
-            continue
-    return ida_cur
+# Carregar JSON simples (sem cache)
+try:
+	if os.path.exists(_OUT_IDA):
+		with open(_OUT_IDA, "r", encoding="utf-8") as f:
+			_ida_data = json.load(f) or {}
+	else:
+		_ida_data = {}
+except Exception:
+	_ida_data = {}
 
-def _clean_block_labels(text: str) -> str:
-    """Remove marcadores de rótulos (Muden/Mudsa/Ade/Adsa, CAE:/CAS:) preservando o conteúdo.
-    Mantém cabeçalhos como Entrada:, Saída:, Reação:, Contexto:, Pensamento interno:.
-    """
-    if not text:
-        return text
-    # Remover marcadores simples
-    text = re.sub(r"\[(?:Muden|Mudsa|Ade|Adsa)\]", "", text, flags=re.IGNORECASE)
-    # Remover marcadores CAE:/CAS: com qualquer conteúdo interno
-    text = re.sub(r"\[(?:CAE|CAS)\s*:[^\]]+\]", "", text, flags=re.IGNORECASE)
-    # Normalizar espaços múltiplos
-    text = re.sub(r"[ \t]{2,}", " ", text)
-    # Normalizar espaços antes de pontuação comum
-    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
-    return text
+try:
+	if os.path.exists(_OUT_UM):
+		with open(_OUT_UM, "r", encoding="utf-8") as f:
+			_um_data = json.load(f) or {}
+	else:
+		_um_data = {}
+except Exception:
+	_um_data = {}
 
-# ---------------- Termômetro de Sentimento (BY INSEPA) ----------------
-THERM_WEIGHTS = {
-    "entrada": {"TEXE": 15, "FADEN": 15, "TEFIE": 15, "RE": 25, "CE": 30},
-    "saida":   {"TEXIS": 15, "FS": 15, "TEXFS": 15, "RS": 25, "CS": 30},
-}
-NEUTRAL_PENALTY = 9
+# Garantir estrutura mínima {"IDA": {"IM": {}}}
+if not isinstance(_ida_data, dict):
+	_ida_data = {}
+_ida_data.setdefault("IDA", {}).setdefault("IM", {})
 
-def _therm_bucket(score_0_100: int):
-    if score_0_100 >= 85:
-        return 100, "Positivo"
-    if score_0_100 >= 60:
-        return 70, "Levemente positivo"
-    if score_0_100 >= 45:
-        return 50, "Neutro"
-    if score_0_100 >= 40:
-        return 40, "Negativo"
-    return 0, "Negativo grave"
+if not isinstance(_um_data, dict):
+	_um_data = {}
+_um_data.setdefault("UM", {})
 
-def _therm_score_from_signs(signs: dict, weights: dict):
-    sitems = (signs or {}).items()
-    pos = sum(weights.get(k, 0) for k, v in sitems if v > 0)
-    neg = sum(weights.get(k, 0) for k, v in sitems if v < 0)
-    neu_count = sum(1 for k, v in sitems if v == 0 and k in weights)
-    score = pos - neg + (neu_count * NEUTRAL_PENALTY)
-    score = max(0, min(100, score))
-    return score, _therm_bucket(score)
+st.subheader("IDA/IM — Renomear IM")
+_ims = _ida_data["IDA"].get("IM", {})
+_im_keys = sorted(_ims.keys(), key=lambda k: int(k) if str(k).isdigit() else float('inf'))
 
-# Carregar dados
-ida_data = load_json(OUT_IDA)
-um_data = load_json(OUT_UM)
-
-# UI: Bloco de notas (único modo)
-st.subheader("Bloco de notas")
-ida_im = ((ida_data.get('IDA') or {}).get('IM') or {})
-im_keys = sorted(ida_im.keys(), key=lambda k: int(k) if str(k).isdigit() else 10**9)
-im_sel = st.selectbox("IDA/IM:", options=im_keys or ['0'], index=(im_keys.index('0') if '0' in im_keys else 0))
-nome_atual_val = ((ida_im.get(im_sel) or {}).get('nome') or "Não definido")
-st.markdown(f"**IDA/IM: {im_sel}**")
-st.markdown(f"**Nome: [{nome_atual_val}]**")
-
-# Editar nome do IDA/IM diretamente
-if st.button("Editar nome do IDA/IM"):
-    st.session_state['edit_im_name'] = True
-if st.session_state.get('edit_im_name'):
-    novo_nome_im = st.text_input(
-        "Novo nome do IDA/IM",
-        value=(nome_atual_val if nome_atual_val and nome_atual_val != "Não definido" else "Interações"),
-        key="edit_nome_im_val"
-    )
-    if st.button("Salvar novo nome"):
-        ida_m, um_m = _merge_blocks(dict(ida_data), dict(um_data), im_sel, [], novo_nome_im.strip() if novo_nome_im else "")
-        if _save_json(OUT_IDA, ida_m, pretty=True) and _save_json(OUT_UM, um_m, pretty=True):
-            st.success(f"IDA/IM: {im_sel}- Nome: {ida_m.get('IDA',{}).get('IM',{}).get(str(im_sel),{}).get('nome','Interações')} salvo com sucesso")
-            st.session_state['edit_im_name'] = False
-            st.cache_data.clear()
-        else:
-            st.error("Falha ao salvar novo nome.")
-
-blocos = ((ida_im.get(im_sel) or {}).get('blocos') or [])
-if not blocos:
-    st.text("<Sem blocos disponíveis por favor colar um novo bloco>")
+if not _im_keys:
+	st.info("Nenhum IM encontrado no inconsciente.json.")
 else:
-    last = blocos[-1]
-    raw_last = (last or {}).get('Bloco (raw)') or ''
-    if raw_last:
-        st.markdown("Bloco:")
-        st.code(_clean_block_labels(raw_last), language="markdown")
+	sel_im = st.selectbox("Selecione o IM", options=_im_keys, key="sel_im")
+	cur_nome = (_ims.get(sel_im) or {}).get("nome", "")
+	st.caption(f"Chave selecionada: {sel_im}")
+	novo_nome = st.text_input("Novo nome do IM", value=cur_nome, key=f"novo_nome_{sel_im}")
+	if st.button("Salvar novo nome", type="primary", key=f"btn_salvar_{sel_im}"):
+		try:
+			_ida_data["IDA"]["IM"].setdefault(sel_im, {})
+			_ida_data["IDA"]["IM"][sel_im]["nome"] = (novo_nome or "").strip()
+			os.makedirs(os.path.dirname(_OUT_IDA), exist_ok=True)
+			with open(_OUT_IDA, "w", encoding="utf-8") as f:
+				json.dump(_ida_data, f, ensure_ascii=False, indent=2)
+			st.success("Nome atualizado com sucesso.")
+		except Exception as e:
+			st.error(f"Falha ao salvar inconsciente.json: {e}")
 
-# Opções de edição de bloco (acima de Novo Bloco)
-st.markdown("---")
-st.markdown("**Editar bloco (versão com rótulos)**")
-if not blocos:
-    st.caption("Nenhum bloco disponível para edição.")
-else:
-    try:
-        bloco_ids = sorted([int(b.get('bloco_id')) for b in blocos if b.get('bloco_id') is not None])
-    except Exception:
-        bloco_ids = []
-    default_idx = len(bloco_ids) - 1 if bloco_ids else 0
-    sel_id = st.selectbox("Escolha o bloco_id para editar", options=bloco_ids or [1], index=default_idx, key=f"edit_sel_{im_sel}")
-    # Recuperar conteúdo atual do bloco selecionado
-    atual_raw = ""
-    for b in blocos:
-        try:
-            if int(b.get('bloco_id')) == sel_id:
-                atual_raw = (b.get('Bloco (raw)') or '')
-                break
-        except Exception:
-            continue
-    novo_raw_edit = st.text_area("Editar Bloco (com rótulos)", value=atual_raw, height=220, key=f"edit_raw_{im_sel}_{sel_id}")
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Salvar edição do bloco", key=f"btn_save_edit_{im_sel}_{sel_id}"):
-            if novo_raw_edit and novo_raw_edit.strip():
-                ida_upd = _update_block_raw(dict(ida_data), im_sel, sel_id, novo_raw_edit.strip())
-                if _save_json(OUT_IDA, ida_upd, pretty=True):
-                    im_node = ((ida_upd.get('IDA') or {}).get('IM') or {}).get(str(im_sel), {})
-                    nome_msg = im_node.get('nome') or "Interações"
-                    st.success(f"IDA/IM: {im_sel} -Nome: {nome_msg}- bloco_id {sel_id} atualizado com sucesso")
-                    st.cache_data.clear()
-                else:
-                    st.error("Falha ao salvar edição do bloco.")
-            else:
-                st.warning("O conteúdo do bloco não pode ser vazio.")
-    with c2:
-        st.button("Descartar alterações", key=f"btn_cancel_edit_{im_sel}_{sel_id}")
+# ===== FIM do PASSO 2 =====
 
-    # Análise de Sentimento (BY INSEPA)
-    st.markdown("---")
-    st.markdown("**Análise de Sentimento (BY INSEPA)**")
-    st.caption("Escolha os sinais (+/0/-) por componente; usamos pesos e neutro soma 9 pontos por componente.")
-    cE1, cE2, cE3, cE4, cE5 = st.columns(5)
-    with cE1:
-        e_texe = st.selectbox("Entrada TEXE", ["+","0","-"], index=1, key=f"sE_TEXE_{im_sel}_{sel_id}")
-    with cE2:
-        e_faden = st.selectbox("Entrada FADEN", ["+","0","-"], index=1, key=f"sE_FADEN_{im_sel}_{sel_id}")
-    with cE3:
-        e_tefie = st.selectbox("Entrada TEFIE", ["+","0","-"], index=1, key=f"sE_TEFIE_{im_sel}_{sel_id}")
-    with cE4:
-        e_re = st.selectbox("Entrada RE", ["+","0","-"], index=1, key=f"sE_RE_{im_sel}_{sel_id}")
-    with cE5:
-        e_ce = st.selectbox("Entrada CE", ["+","0","-"], index=1, key=f"sE_CE_{im_sel}_{sel_id}")
 
-    cS1, cS2, cS3, cS4, cS5 = st.columns(5)
-    with cS1:
-        s_texis = st.selectbox("Saída TEXIS", ["+","0","-"], index=1, key=f"sS_TEXIS_{im_sel}_{sel_id}")
-    with cS2:
-        s_fs = st.selectbox("Saída FS", ["+","0","-"], index=1, key=f"sS_FS_{im_sel}_{sel_id}")
-    with cS3:
-        s_texfs = st.selectbox("Saída TEXFS", ["+","0","-"], index=1, key=f"sS_TEXFS_{im_sel}_{sel_id}")
-    with cS4:
-        s_rs = st.selectbox("Saída RS", ["+","0","-"], index=1, key=f"sS_RS_{im_sel}_{sel_id}")
-    with cS5:
-        s_cs = st.selectbox("Saída CS", ["+","0","-"], index=1, key=f"sS_CS_{im_sel}_{sel_id}")
+# =============================================
+#Passo 3: Colar bloco via TPL e extrair campos#
+# [PASSO-3] TPL -> TEXE/FADEN/TEFIE + TEXIS/FS/TEXFS + RE/CE/PIDE/RS/CS
+# =============================================
 
-    if st.button("Salvar sentimento (BY INSEPA)", key=f"btn_save_sent_{im_sel}_{sel_id}"):
-        mapv = {"+": 1, "0": 0, "-": -1}
-        sE = {
-            "TEXE": mapv.get(e_texe, 0),
-            "FADEN": mapv.get(e_faden, 0),
-            "TEFIE": mapv.get(e_tefie, 0),
-            "RE": mapv.get(e_re, 0),
-            "CE": mapv.get(e_ce, 0),
-        }
-        sS = {
-            "TEXIS": mapv.get(s_texis, 0),
-            "FS": mapv.get(s_fs, 0),
-            "TEXFS": mapv.get(s_texfs, 0),
-            "RS": mapv.get(s_rs, 0),
-            "CS": mapv.get(s_cs, 0),
-        }
-        scoreE, (bucketE, labelE) = _therm_score_from_signs(sE, THERM_WEIGHTS["entrada"])
-        scoreS, (bucketS, labelS) = _therm_score_from_signs(sS, THERM_WEIGHTS["saida"])
-        # Atualizar no IDA
-        ida_upd = dict(ida_data)
-        im_node = ((ida_upd.get('IDA') or {}).get('IM') or {}).get(str(im_sel)) or {}
-        for b in (im_node.get('blocos') or []):
-            try:
-                if int(b.get('bloco_id')) == sel_id:
-                    b.setdefault('Entrada', {})['Sentimento de Entrada'] = {"SDE": str(scoreE), "t": labelE, "Tendência de Entrada": bucketE}
-                    b['Sentimento da Saída'] = {"SDS": str(scoreS), "t": labelS, "Tendência da Saída": bucketS}
-                    b['Ressonância'] = (bucketE == bucketS)
-                    break
-            except Exception:
-                continue
-        if _save_json(OUT_IDA, ida_upd, pretty=True):
-            nome_msg = im_node.get('nome') or "Interações"
-            st.success(f"IDA/IM: {im_sel} -Nome: {nome_msg}- bloco_id {sel_id} sentimento atualizado | Entrada: {scoreE} ({labelE}) | Saída: {scoreS} ({labelS}) | Ressonância: {bucketE == bucketS}")
-            st.cache_data.clear()
-        else:
-            st.error("Falha ao salvar sentimento.")
+def _extract_text_parts(text: str):
+	"""Extrai (antes_do_travessao, fala_ate_ponto, resto_pos_fala) de um texto.
+	Regras:
+	- antes_do_travessao: tudo antes do primeiro travessão (—). Se não houver, é o texto inteiro.
+	- fala_ate_ponto: trecho após o travessão até o primeiro ponto final (.) incluso, se existir.
+	- resto_pos_fala: o restante do texto após o primeiro ponto final da fala.
+	"""
+	text = (text or "").strip()
+	if not text:
+		return "", "", ""
+	idx = text.find("—")
+	if idx < 0:
+		return text, "", ""
+	before = text[:idx].strip()
+	after = text[idx+1:].lstrip()  # após o travessão
+	p = after.find(".")
+	if p < 0:
+		fala = after.strip()
+		rest = ""
+	else:
+		fala = after[:p+1].strip()
+		rest = after[p+1:].lstrip()
+	return before, fala, rest
 
-novo_raw = st.text_area("Novo Bloco (cole aqui)", height=220, key="novo_bloco_raw")
-if st.button("Associar bloco ao IM atual"):
-    st.session_state['bn_associate'] = True
-if st.session_state.get('bn_associate'):
-    nome_preview = nome_atual_val or "Não definido"
-    st.markdown(f"**Este bloco será associado ao IDA/IM:{im_sel} Nome: {nome_preview}**")
-    if st.button("Deseja atualizar o nome? (Sim)"):
-        st.session_state['bn_update_name'] = True
-    if st.session_state.get('bn_update_name'):
-        novo_nome = st.text_input("Digite novo nome", value=(nome_atual_val if nome_atual_val != "Não definido" else "Interações"), key="bn_novo_nome")
-        if st.button("Salvar nome e bloco"):
-            novos = []
-            if novo_raw and novo_raw.strip():
-                novos.append({
-                    "bloco_id": None,
-                    "Bloco (raw)": novo_raw.strip(),
-                    "Entrada": {},
-                    "Saída": {},
-                })
-            ida_m, um_m = _merge_blocks(dict(ida_data), dict(um_data), im_sel, novos, novo_nome.strip() if novo_nome else None)
-            if _save_json(OUT_IDA, ida_m, pretty=True) and _save_json(OUT_UM, um_m, pretty=True):
-                st.success(f"IDA/IM: {im_sel}- Nome: {ida_m.get('IDA',{}).get('IM',{}).get(str(im_sel),{}).get('nome','Interações')} salvo com sucesso")
-                st.session_state['bn_associate'] = False
-                st.session_state['bn_update_name'] = False
-                st.cache_data.clear()
-            else:
-                st.error("Falha ao salvar.")
-    else:
-        if st.button("Salvar bloco (sem alterar nome)"):
-            novos = []
-            if novo_raw and novo_raw.strip():
-                novos.append({
-                    "bloco_id": None,
-                    "Bloco (raw)": novo_raw.strip(),
-                    "Entrada": {},
-                    "Saída": {},
-                })
-            ida_m, um_m = _merge_blocks(dict(ida_data), dict(um_data), im_sel, novos, None)
-            if _save_json(OUT_IDA, ida_m, pretty=True) and _save_json(OUT_UM, um_m, pretty=True):
-                st.success(f"IDA/IM: {im_sel}- Nome: {ida_m.get('IDA',{}).get('IM',{}).get(str(im_sel),{}).get('nome','Interações')} salvo com sucesso")
-                st.session_state['bn_associate'] = False
-                st.cache_data.clear()
-            else:
-                st.error("Falha ao salvar.")
 
-st.divider()
-st.markdown("**Deseja criar um novo IDA/IM?**")
-if st.button("Criar novo IM"):
-    st.session_state['bn_create_im'] = True
-if st.session_state.get('bn_create_im'):
-    try:
-        next_im = str((max([int(k) for k in ida_im.keys() if str(k).isdigit()]) + 1) if ida_im else 0)
-    except Exception:
-        next_im = '0'
-    new_key = st.text_input("Digite a chave do novo IDA/IM (número)", value=next_im, key="bn_new_im_key")
-    new_name = st.text_input("Digite novo nome", value="Interações", key="bn_new_im_name")
-    if st.button("Criar e definir IM"):
-        if not re.match(r"^\d+$", str(new_key or "").strip()):
-            st.error("A chave do IM deve ser numérica.")
-        else:
-            ida_m, um_m = _merge_blocks(dict(ida_data), dict(um_data), str(new_key).strip(), [], new_name.strip())
-            if _save_json(OUT_IDA, ida_m, pretty=True) and _save_json(OUT_UM, um_m, pretty=True):
-                st.success(f"IDA/IM: {new_key}- Nome: {new_name} salvo com sucesso")
-                st.session_state['bn_create_im'] = False
-                st.cache_data.clear()
-            else:
-                st.error("Falha ao criar IM.")
+def _parse_tpl_sections(raw: str):
+	"""Extrai seções do TPL único:
+	Entrada, Reação (E), Contexto (E), Pensamento interno, Saída, Reação (S), Contexto (S).
+	Mantém rótulos como [Muden], [CAE: ...], etc. Não normaliza nada.
+	"""
+	s = (raw or "").strip() + "\n<END>:\n"
+	# Helper para capturar desde um cabeçalho até o próximo de uma lista
+	def grab(name_pat: str, next_pats: list, start_pos: int = 0):
+		nxt = "|".join([rf"^\s*{p}\s*:" for p in next_pats] + [r"^\s*<END>\s*:"])
+		m = re.search(rf"(?ims)^\s*{name_pat}\s*:(.*?)(?={nxt})", s[start_pos:])
+		if not m:
+			return "", start_pos
+		content = (m.group(1) or "").strip()
+		end_pos = start_pos + m.end()
+		return content, end_pos
 
-st.caption("Bloco de notas INSEPA — salvos em inconsciente.json (IDA) e cabeçalho em adam_memoria.json (UM).")
+	pos = 0
+	# Ignorar opcional "Bloco:" no topo
+	_, pos = grab(r"Bloco", ["Entrada", "Reação", "Contexto", "Pensamento interno", "Saída"], 0)
+
+	entrada, pos = grab(r"Entrada", ["Reação", "Contexto", "Pensamento interno", "Saída"], pos)
+	re_e, pos = grab(r"Reação", ["Contexto", "Pensamento interno", "Saída"], pos)
+	ce_e, pos = grab(r"Contexto", ["Pensamento interno", "Saída"], pos)
+	pide, pos = grab(r"Pensamento\s+interno", ["Saída"], pos)
+	saida, pos = grab(r"Saída", ["Reação", "Contexto"], pos)
+	re_s, pos = grab(r"Reação", ["Contexto"], pos)
+	cs, pos = grab(r"Contexto", ["<END>"], pos)
+
+	return {
+		"entrada": entrada,
+		"re_e": re_e,
+		"ce_e": ce_e,
+		"pide": pide,
+		"saida": saida,
+		"re_s": re_s,
+		"cs": cs,
+	}
+
+
+with st.expander("Passo 3 — Colar bloco (TPL)", expanded=True):
+	st.caption("Cole o bloco único no formato indicado. A extração mostrará os componentes, sem salvar.")
+
+	tpl_raw = st.text_area("Bloco (TPL)", height=360, key="tpl_bloco_raw")
+	if st.button("Extrair do TPL", type="primary", key="btn_tpl_extract"):
+		secs = _parse_tpl_sections(tpl_raw)
+		# Entrada
+		texe, faden, tefie = _extract_text_parts(secs.get("entrada", ""))
+		# Saída
+		texis, fs, texfs = _extract_text_parts(secs.get("saida", ""))
+
+		st.markdown("---")
+		c1, c2 = st.columns(2)
+		with c1:
+			st.markdown("#### Extratos — Entrada")
+			st.write({
+				"TEXE": texe,
+				"FADEN": faden,
+				"TEFIE": tefie,
+				"RE": secs.get("re_e", ""),
+				"CE": secs.get("ce_e", ""),
+				"PIDE": secs.get("pide", ""),
+			})
+		with c2:
+			st.markdown("#### Extratos — Saída")
+			st.write({
+				"TEXIS": texis,
+				"FS": fs,
+				"TEXFS": texfs,
+				"RS": secs.get("re_s", ""),
+				"CS": secs.get("cs", ""),
+			})
+
+# ===== FIM do PASSO 3 =====
+
+
+# =============================================
+#Passo 4: Mapear rótulos e gerar IDA/UM (prévia)#
+# [PASSO-4] Modelo exato do README — sem salvar
+# =============================================
+
+_REACTION_MAP = {"^^": "um sorriso", "<3>": "um sorriso", "<3": "um sorriso", ":)": "um sorriso"}
+
+def _scan_tokens(text: str):
+	tokens = []
+	if not text:
+		return tokens
+	pattern = r"(\[(?:Muden|Mudsa|Ade|Adsa)\]|\[(?:CAE|CAS)\s*:[^\]]+\])|([\wÀ-ÖØ-öø-ÿ']+(?:-[\wÀ-ÖØ-öø-ÿ']+)*)|([\.!?,;:—])"
+	for m in re.finditer(pattern, text):
+		if m.group(1):
+			tokens.append({"kind": "marker", "val": m.group(1)})
+		elif m.group(2):
+			tokens.append({"kind": "word", "val": m.group(2)})
+		else:
+			tokens.append({"kind": "punct", "val": m.group(3)})
+	return tokens
+
+def _emit_tokens(scan, im_key: str, start_idx: int, dado: str, attr_key: str = None, span_marker: str = None):
+	out = []
+	ids = []
+	spans = []  # para multivars
+	idx = start_idx
+	current_attr_out = None
+	current_attr_norm = None
+	in_span = False
+	span_tokens = []
+	span_ids = []
+
+	i = 0
+	while i < len(scan):
+		tk = scan[i]
+		if tk['kind'] == 'marker':
+			s = tk['val']
+			# CAE/CAS
+			if re.match(r"\[(?:CAE|CAS)\s*:[^\]]+\]", s, flags=re.IGNORECASE):
+				label_raw = s.split(":",1)[1][:-1].strip()
+				label_clean = re.sub(r"[\s\.:,;!?]+$", "", label_raw).strip()
+				label_norm = label_clean.lower()
+				if current_attr_norm == label_norm:
+					current_attr_out = None
+					current_attr_norm = None
+				else:
+					current_attr_out = label_clean
+					current_attr_norm = label_norm
+			# Muden/Mudsa (span)
+			elif span_marker and s.lower() == span_marker.lower():
+				in_span = not in_span
+				if not in_span and span_tokens:
+					spans.append({"Tokens": " ".join(span_tokens).strip(), "ids": span_ids[:]})
+					span_tokens, span_ids = [], []
+			# Ade/Adsa: tratadas como marcadores de ação (não togglam atributo)
+			i += 1
+			continue
+
+		# materializa token
+		idx += 1
+		safe_im = str(im_key or "0").strip()
+		tid = f"{safe_im}.{idx}"
+		ids.append(tid)
+		obj = {dado: tid, "t": tk['val'], "vars": ["0.0"]}
+		if current_attr_out and attr_key:
+			obj[attr_key] = [f": {current_attr_out}"]
+		out.append(obj)
+		if in_span:
+			span_tokens.append(tk['val'])
+			span_ids.append(tid)
+		i += 1
+
+	return out, idx, ids, spans
+
+def _split_sentences(text: str):
+	if not text:
+		return []
+	parts = re.split(r"(?<=[\.!?])\s+", text.strip())
+	return [p for p in parts if p]
+
+def _build_um_from_attrs(tokens, attr_key: str, fonte: str, dado_key: str):
+	entries = []
+	cur = None
+	cur_tokens = []
+	cur_ids = []
+	for t in tokens or []:
+		if attr_key in t:
+			label = (t[attr_key][0] or "").strip()
+			label = label[2:].strip() if label.startswith(":") else label
+			tid = t.get(dado_key)
+			if cur == label:
+				cur_tokens.append(t['t'])
+				if tid: cur_ids.append(tid)
+			else:
+				if cur and cur_tokens:
+					entries.append({attr_key.upper(): cur, "Fonte": fonte, "Dado": dado_key, "Tokens": " ".join(cur_tokens).strip(), dado_key: cur_ids[:]})
+				cur = label
+				cur_tokens = [t['t']]
+				cur_ids = [tid] if tid else []
+		else:
+			if cur and cur_tokens:
+				entries.append({attr_key.upper(): cur, "Fonte": fonte, "Dado": dado_key, "Tokens": " ".join(cur_tokens).strip(), dado_key: cur_ids[:]})
+			cur, cur_tokens, cur_ids = None, [], []
+	if cur and cur_tokens:
+		entries.append({attr_key.upper(): cur, "Fonte": fonte, "Dado": dado_key, "Tokens": " ".join(cur_tokens).strip(), dado_key: cur_ids[:]})
+	return entries
+
+def _sanitize_ida_um(ida_block, um_block, im_key: str):
+	safe_im = str(im_key or "0").strip()
+	neutral = f"{safe_im}.0"
+	def ensure_neutral_list(objs, key_name):
+		if objs:
+			return objs
+		return [{key_name: neutral, 't': '', 'vars': ['0.0']}]
+	def ensure_neutral_ids(ids):
+		return ids if ids else [neutral]
+	# Entrada (reconstroi no formato e ordem desejados)
+	ent_src = ida_block.get("Entrada", {})
+	ent = {}
+	ent["Texto Inicial DE ENTRADA"] = ensure_neutral_list(ent_src.get("Texto Inicial DE ENTRADA"), 'TEXE')
+	ent["Fala DE ENTRADA"] = ensure_neutral_list(ent_src.get("Fala DE ENTRADA"), 'FADEN')
+	ent["Texto Final de Entrada"] = ensure_neutral_list(ent_src.get("Texto Final de Entrada"), 'TEFIE')
+	ent["Reação"] = ent_src.get("Reação") or [{"RE": neutral, "t": "", "vars": ["0.0"]}]
+	ent["Contexto"] = ensure_neutral_list(ent_src.get("Contexto"), 'CE')
+	ida_block["Entrada"] = ent
+
+	# Saída (reconstroi no formato e ordem desejados)
+	sai_src = ida_block.get("Saída", {})
+	sai = {}
+	sai["Texto Inicial de SAÍDA"] = ensure_neutral_list(sai_src.get("Texto Inicial de SAÍDA"), 'TEXIS')
+	sai["Fala de Saída"] = ensure_neutral_list(sai_src.get("Fala de Saída"), 'FS')
+	sai["Texto Final de Saída"] = ensure_neutral_list(sai_src.get("Texto Final de Saída"), 'TEXFS')
+	sai["Reação de Saída"] = sai_src.get("Reação de Saída") or [{"RS": neutral, "t": "", "vars": ["0.0"]}]
+	sai["Contexto de Saída"] = ensure_neutral_list(sai_src.get("Contexto de Saída"), 'CE')
+	ida_block["Saída"] = sai
+	# PIDE
+	if not ida_block.get("Pensamento Interno"):
+		ida_block["Pensamento Interno"] = [{"PIDE": neutral, "t": ""}]
+	# Totais
+	def ids_from(objs, key):
+		res = []
+		for o in objs or []:
+			v = o.get(key)
+			if v: res.append(v)
+		return res
+	total_e = [
+		*ids_from(ent.get("Texto Inicial DE ENTRADA"), 'TEXE'),
+		*ids_from(ent.get("Fala DE ENTRADA"), 'FADEN'),
+		*ids_from(ent.get("Texto Final de Entrada"), 'TEFIE'),
+		*[x.get('RE') for x in (ent.get("Reação") or []) if x.get('RE')],
+		*ids_from(ent.get("Contexto"), 'CE'),
+		*[x.get('PIDE') for x in (ida_block.get("Pensamento Interno") or []) if x.get('PIDE')],
+	]
+	total_s = [
+		*ids_from(sai.get("Texto Inicial de SAÍDA"), 'TEXIS'),
+		*ids_from(sai.get("Fala de Saída"), 'FS'),
+		*ids_from(sai.get("Texto Final de Saída"), 'TEXFS'),
+		*[x.get('RS') for x in (sai.get("Reação de Saída") or []) if x.get('RS')],
+		*ids_from(sai.get("Contexto de Saída"), 'CE'),
+	]
+	ida_block["Total de Entrada"] = total_e if total_e else [neutral]
+	ida_block["Total de Saída"] = total_s if total_s else [neutral]
+
+	if um_block is not None:
+		um_block["Total de Entrada"] = um_block.get("Total de Entrada") or ida_block["Total de Entrada"]
+		um_block["Total de Saída"] = um_block.get("Total de Saída") or ida_block["Total de Saída"]
+		um_block["ultimo_child_entrada"] = um_block["Total de Entrada"][-1]
+		um_block["ultimo_child_saida"] = um_block["Total de Saída"][-1]
+	return ida_block, um_block
+
+def _build_ida_um_from_tpl(secs: dict, im_key: str):
+	# Tokenizar partes
+	texe_scan = _scan_tokens(secs.get('entrada',''))
+	faden_scan = _scan_tokens(secs.get('entrada',''))  # falas vêm da mesma seção após travessão
+	tefie_scan = _scan_tokens(secs.get('entrada',''))
+	# Separar com base no travessão e ponto
+	ent_before, ent_fala, ent_rest = _extract_text_parts(secs.get('entrada',''))
+	texe_scan = _scan_tokens(ent_before)
+	faden_scan = _scan_tokens(ent_fala)
+	tefie_scan = _scan_tokens(ent_rest)
+	# Saída
+	saida_before, saida_fala, saida_rest = _extract_text_parts(secs.get('saida',''))
+	texis_scan = _scan_tokens(saida_before)
+	fs_scan = _scan_tokens(saida_fala)
+	texfs_scan = _scan_tokens(saida_rest)
+	# Contextos e reações
+	ctx_e_scan = _scan_tokens(secs.get('ce_e',''))
+	ctx_s_scan = _scan_tokens(secs.get('cs',''))
+	re_e_val = (secs.get('re_e','') or '').strip()
+	re_s_val = (secs.get('re_s','') or '').strip()
+
+	# Emitir objetos com ids e atributos
+	idx = 0
+	TEXE, idx, ids_texe, mv_texe = _emit_tokens(texe_scan, im_key, idx, 'TEXE', 'cae', span_marker='[Muden]')
+	FADEN, idx, ids_faden, mv_faden = _emit_tokens(faden_scan, im_key, idx, 'FADEN', 'cae', span_marker='[Muden]')
+	RE_list = []
+	if re_e_val:
+		sym = re_e_val.split()[0]
+		idx += 1
+		safe_im = str(im_key or "0").strip()
+		RE_list.append({"RE": f"{safe_im}.{idx}", "t": sym, "vars": [_REACTION_MAP.get(sym, "0.0")]})
+	TEFIE, idx, ids_tefie, mv_tefie = _emit_tokens(tefie_scan, im_key, idx, 'TEFIE', 'cae', span_marker='[Muden]')
+	CE_e, idx, ids_ce_e, _ = _emit_tokens(ctx_e_scan, im_key, idx, 'CE', None, span_marker='[Muden]')
+
+	TEXIS, idx, ids_texis, mv_texis = _emit_tokens(texis_scan, im_key, idx, 'TEXIS', None, span_marker='[Mudsa]')
+	FS, idx, ids_fs, mv_fs = _emit_tokens(fs_scan, im_key, idx, 'FS', 'cas', span_marker='[Mudsa]')
+	RS_list = []
+	if re_s_val:
+		sym2 = re_s_val.split()[0]
+		idx += 1
+		safe_im = str(im_key or "0").strip()
+		RS_list.append({"RS": f"{safe_im}.{idx}", "t": sym2, "vars": [_REACTION_MAP.get(sym2, "0.0")]})
+	TEXFS, idx, ids_texfs, mv_texfs = _emit_tokens(texfs_scan, im_key, idx, 'TEXFS', 'cas', span_marker='[Mudsa]')
+	CE_s, idx, ids_ce_s, _ = _emit_tokens(ctx_s_scan, im_key, idx, 'CE', None, span_marker='[Mudsa]')
+
+	# Garantir neutros e totais
+	ida_block = {
+		"Entrada": {
+			"Texto Inicial DE ENTRADA": TEXE,
+			"Fala DE ENTRADA": FADEN,
+			"Texto Final de Entrada": TEFIE,
+			"Reação": RE_list,
+			"Contexto": CE_e,
+		},
+		"Pensamento Interno": [],
+		"Saída": {
+			"Texto Inicial de SAÍDA": TEXIS,
+			"Fala de Saída": FS,
+			"Texto Final de Saída": TEXFS,
+			"Reação de Saída": RS_list,
+			"Contexto de Saída": CE_s,
+		},
+	}
+	# PIDE por frase
+	PIDE = []
+	for s in _split_sentences(secs.get('pide','')):
+		s2 = s.strip()
+		if not s2: continue
+		idx += 1
+		safe_im = str(im_key or "0").strip()
+		tid = f"{safe_im}.{idx}"
+		PIDE.append({"PIDE": tid, "t": s2})
+	ida_block["Pensamento Interno"] = PIDE
+
+	# UM
+	um_block = {
+		"Características de Entrada": [],
+		"Lista de Multivariações de Entrada": [],
+		"Características de Saída": [],
+		"Lista de Multivariações de Saída": [],
+	}
+	um_block["Características de Entrada"] += _build_um_from_attrs(TEXE, 'cae', 'Texto de entrada', 'TEXE')
+	um_block["Características de Entrada"] += _build_um_from_attrs(FADEN, 'cae', 'Fala de entrada', 'FADEN')
+	um_block["Características de Entrada"] += _build_um_from_attrs(TEFIE, 'cae', 'Texto de entrada', 'TEFIE')
+	um_block["Características de Saída"] += _build_um_from_attrs(FS, 'cas', 'Fala de saída', 'FS')
+	um_block["Características de Saída"] += _build_um_from_attrs(TEXFS, 'cas', 'Texto de saída', 'TEXFS')
+
+	def push_mv(spans, fonte, dado):
+		for s in spans or []:
+			if s.get('Tokens'):
+				um_block[f"Lista de Multivariações de {fonte}"].append({
+					"Fonte": ("Texto de entrada" if fonte=="Entrada" and dado in ("TEXE","TEFIE") else
+							  "Fala de entrada" if fonte=="Entrada" else
+							  "Texto de saída" if dado in ("TEXIS","TEXFS") else "Fala de saída"),
+					"Dado": dado,
+					"Tokens": s['Tokens'],
+					"Multivars:": ["0.0"],
+					dado: s['ids']
+				})
+	push_mv(mv_texe, 'Entrada', 'TEXE')
+	push_mv(mv_faden, 'Entrada', 'FADEN')
+	push_mv(mv_tefie, 'Entrada', 'TEFIE')
+	push_mv(mv_texis, 'Saída', 'TEXIS')
+	push_mv(mv_fs, 'Saída', 'FS')
+	push_mv(mv_texfs, 'Saída', 'TEXFS')
+
+	ida_block, um_block = _sanitize_ida_um(ida_block, um_block, im_key)
+	return ida_block, um_block
+
+
+with st.expander("Passo 4 — Prévia IDA/UM (modelo README)", expanded=False):
+	st.caption("Gera os JSONs IDA/UM com mapeamento de rótulos para tokens. Não salva arquivos.")
+	tpl_src = st.text_area("Cole o mesmo bloco (TPL)", height=260, key="tpl_src_p4")
+	im_for_ids = st.text_input("IM para IDs (ex.: 0)", value=(str(st.session_state.get('sel_im', '0')) if st.session_state.get('sel_im') else '0'))
+	if st.button("Gerar IDA/UM (prévia)", key="btn_p4_preview"):
+		try:
+			secs = _parse_tpl_sections(tpl_src)
+			ida_block, um_block = _build_ida_um_from_tpl(secs, im_for_ids)
+			# Determinar nome e próximo bloco_id com base no arquivo existente
+			im_meta = (_ida_data.get("IDA", {}).get("IM", {}).get(im_for_ids) or {})
+			im_nome = im_meta.get("nome", "")
+			blocos_existentes = im_meta.get("blocos", [])
+			prox_bloco_id_ida = (len(blocos_existentes) + 1) if isinstance(blocos_existentes, list) else 1
+
+			um_meta = (_um_data.get("UM", {}).get(im_for_ids) or {})
+			um_blocos_existentes = um_meta.get("blocos", [])
+			prox_bloco_id_um = (len(um_blocos_existentes) + 1) if isinstance(um_blocos_existentes, list) else 1
+			prox_bloco_id = max(prox_bloco_id_ida, prox_bloco_id_um)
+
+			full_ida = {
+				"IDA": {
+					"IM": {
+						str(im_for_ids): {
+							"nome": im_nome,
+							"blocos": [
+								{
+									"bloco_id": prox_bloco_id,
+									**ida_block
+								}
+							]
+						}
+					}
+				}
+			}
+
+			full_um = {
+				"UM": {
+					str(im_for_ids): {
+						"Universo Mãe": im_nome,
+						"blocos": [
+							{
+								"bloco_id": prox_bloco_id,
+								**um_block
+							}
+						]
+					}
+				}
+			}
+
+			st.markdown("Inconsciente.json (IDA) — com cabeçalho e ordem:")
+			st.code(json.dumps(full_ida, ensure_ascii=False, indent=2), language="json")
+			st.markdown("Memoria.json (UM) — com cabeçalho e ordem:")
+			st.code(json.dumps(full_um, ensure_ascii=False, indent=2), language="json")
+		except Exception as e:
+			st.error(f"Erro ao gerar prévia: {e}")
+
+# ===== FIM do PASSO 4 =====
+
