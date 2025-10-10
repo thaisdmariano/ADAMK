@@ -205,7 +205,17 @@ def _scan_tokens(text: str):
 			tokens.append({"kind": "punct", "val": m.group(3)})
 	return tokens
 
-def _emit_tokens(scan, im_key: str, start_idx: int, dado: str, attr_key: str = None, span_marker: str = None, action_marker: str = None):
+def _emit_tokens(
+	scan,
+	im_key: str,
+	start_idx: int,
+	dado: str,
+	attr_key: str = None,
+	span_marker: str = None,
+	action_marker: str = None,
+	in_span: bool = False,
+	in_action_span: bool = False,
+):
 	out = []
 	ids = []
 	spans = []  # para multivars (Muden/Mudsa)
@@ -213,8 +223,7 @@ def _emit_tokens(scan, im_key: str, start_idx: int, dado: str, attr_key: str = N
 	idx = start_idx
 	current_attr_out = None
 	current_attr_norm = None
-	in_span = False
-	in_action_span = False
+	# Estados de span podem vir encadeados de chamadas anteriores
 	span_tokens = []
 	span_ids = []
 	action_tokens = []
@@ -274,7 +283,7 @@ def _emit_tokens(scan, im_key: str, start_idx: int, dado: str, attr_key: str = N
 	if in_action_span and action_tokens:
 		action_spans.append({"Tokens": " ".join(action_tokens).strip(), "ids": action_ids[:]})
 
-	return out, idx, ids, spans, action_spans
+	return out, idx, ids, spans, action_spans, in_span, in_action_span
 
 def _split_sentences(text: str):
 	if not text:
@@ -324,6 +333,8 @@ def _sanitize_ida_um(ida_block, um_block, im_key: str):
 	ent["Texto Inicial DE ENTRADA"] = ensure_neutral_list(ent_src.get("Texto Inicial DE ENTRADA"), 'TEXE')
 	ent["Fala DE ENTRADA"] = ensure_neutral_list(ent_src.get("Fala DE ENTRADA"), 'FADEN')
 	ent["Texto Final de Entrada"] = ensure_neutral_list(ent_src.get("Texto Final de Entrada"), 'TEFIE')
+	# Totais e último child serão inseridos após o cálculo logo abaixo
+	# (manteremos a posição desejada logo após TEFIE)
 	ent["Reação"] = ent_src.get("Reação") or [{"RE": neutral, "t": "", "vars": ["0.0"]}]
 	ent["Contexto"] = ensure_neutral_list(ent_src.get("Contexto"), 'CE')
 	ida_block["Entrada"] = ent
@@ -334,6 +345,7 @@ def _sanitize_ida_um(ida_block, um_block, im_key: str):
 	sai["Texto Inicial de SAÍDA"] = ensure_neutral_list(sai_src.get("Texto Inicial de SAÍDA"), 'TEXIS')
 	sai["Fala de Saída"] = ensure_neutral_list(sai_src.get("Fala de Saída"), 'FS')
 	sai["Texto Final de Saída"] = ensure_neutral_list(sai_src.get("Texto Final de Saída"), 'TEXFS')
+	# Totais e último child serão inseridos após o cálculo logo abaixo
 	sai["Reação de Saída"] = sai_src.get("Reação de Saída") or [{"RS": neutral, "t": "", "vars": ["0.0"]}]
 	sai["Contexto de Saída"] = ensure_neutral_list(sai_src.get("Contexto de Saída"), 'CE')
 	ida_block["Saída"] = sai
@@ -368,6 +380,7 @@ def _sanitize_ida_um(ida_block, um_block, im_key: str):
 		return int(m.group(1)) if m else 0
 	ida_block["Total de Entrada"] = (sorted(total_e, key=_id_num) if total_e else [neutral])
 	ida_block["Total de Saída"] = (sorted(total_s, key=_id_num) if total_s else [neutral])
+	# (Não inserir Totais dentro das seções do IDA; manter estrutura original)
 
 	if um_block is not None:
 		um_block["Total de Entrada"] = um_block.get("Total de Entrada") or ida_block["Total de Entrada"]
@@ -447,8 +460,12 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str):
 
 	# Emitir objetos com ids e atributos
 	idx = 0
-	TEXE, idx, ids_texe, mv_texe, act_texe = _emit_tokens(texe_scan, im_key, idx, 'TEXE', 'cae', span_marker='[Muden]', action_marker='[Ade]')
-	FADEN, idx, ids_faden, mv_faden, act_faden = _emit_tokens(faden_scan, im_key, idx, 'FADEN', 'cae', span_marker='[Muden]', action_marker='[Ade]')
+	TEXE, idx, ids_texe, mv_texe, act_texe, in_muden, in_ade = _emit_tokens(
+		texe_scan, im_key, idx, 'TEXE', 'cae', span_marker='[Muden]', action_marker='[Ade]', in_span=False, in_action_span=False
+	)
+	FADEN, idx, ids_faden, mv_faden, act_faden, in_muden, in_ade = _emit_tokens(
+		faden_scan, im_key, idx, 'FADEN', 'cae', span_marker='[Muden]', action_marker='[Ade]', in_span=in_muden, in_action_span=in_ade
+	)
 	# Coletar ações de entrada a partir de spans [Ade] (sem quebrar a ordem de IDs de RE)
 	ade_texts = []
 	for s in (act_texe or []) + (act_faden or []):
@@ -464,8 +481,12 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str):
 		re_t = re_e_val.strip() if re_e_val else ""
 		vars_list = (ade_texts if ade_texts else ["0.0"])  # vars vêm do ADE
 		RE_list.append({"RE": f"{safe_im}.{idx}", "t": re_t, "vars": vars_list})
-	TEFIE, idx, ids_tefie, mv_tefie, act_tefie = _emit_tokens(tefie_scan, im_key, idx, 'TEFIE', 'cae', span_marker='[Muden]')
-	CE_e, idx, ids_ce_e, _, act_ce_e = _emit_tokens(ctx_e_scan, im_key, idx, 'CE', None, span_marker='[Muden]', action_marker='[Ade]')
+	TEFIE, idx, ids_tefie, mv_tefie, act_tefie, _, _ = _emit_tokens(
+		tefie_scan, im_key, idx, 'TEFIE', 'cae', span_marker='[Muden]', action_marker='[Ade]', in_span=in_muden, in_action_span=in_ade
+	)
+	CE_e, idx, ids_ce_e, _, act_ce_e, _, _ = _emit_tokens(
+		ctx_e_scan, im_key, idx, 'CE', None, span_marker='[Muden]', action_marker='[Ade]', in_span=False, in_action_span=False
+	)
 
 	# PIDE por frase (IDs após Entrada e antes de Saída)
 	PIDE = []
@@ -480,8 +501,12 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str):
 
 	# Agora emitir Saída, mantendo IDs após PIDE
 	# TEXIS também deve captar CAS quando houver label na Saída
-	TEXIS, idx, ids_texis, mv_texis, act_texis = _emit_tokens(texis_scan, im_key, idx, 'TEXIS', 'cas', span_marker='[Mudsa]', action_marker='[Adsa]')
-	FS, idx, ids_fs, mv_fs, act_fs = _emit_tokens(fs_scan, im_key, idx, 'FS', 'cas', span_marker='[Mudsa]', action_marker='[Adsa]')
+	TEXIS, idx, ids_texis, mv_texis, act_texis, in_mudsa, in_adsa = _emit_tokens(
+		texis_scan, im_key, idx, 'TEXIS', 'cas', span_marker='[Mudsa]', action_marker='[Adsa]', in_span=False, in_action_span=False
+	)
+	FS, idx, ids_fs, mv_fs, act_fs, in_mudsa, in_adsa = _emit_tokens(
+		fs_scan, im_key, idx, 'FS', 'cas', span_marker='[Mudsa]', action_marker='[Adsa]', in_span=in_mudsa, in_action_span=in_adsa
+	)
 	# Coletar ações de saída a partir de spans [Adsa] (sem quebrar a ordem de IDs de RS)
 	adsa_texts = []
 	for s in (act_texis or []) + (act_fs or []):
@@ -497,8 +522,12 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str):
 		rs_t = re_s_val.strip() if re_s_val else ""
 		vars_list_s = (adsa_texts if adsa_texts else ["0.0"])  # vars vêm do ADSA
 		RS_list.append({"RS": f"{safe_im}.{idx}", "t": rs_t, "vars": vars_list_s})
-	TEXFS, idx, ids_texfs, mv_texfs, act_texfs = _emit_tokens(texfs_scan, im_key, idx, 'TEXFS', 'cas', span_marker='[Mudsa]')
-	CE_s, idx, ids_ce_s, _, act_ce_s = _emit_tokens(ctx_s_scan, im_key, idx, 'CE', None, span_marker='[Mudsa]', action_marker='[Adsa]')
+	TEXFS, idx, ids_texfs, mv_texfs, act_texfs, _, _ = _emit_tokens(
+		texfs_scan, im_key, idx, 'TEXFS', 'cas', span_marker='[Mudsa]', action_marker='[Adsa]', in_span=in_mudsa, in_action_span=in_adsa
+	)
+	CE_s, idx, ids_ce_s, _, act_ce_s, _, _ = _emit_tokens(
+		ctx_s_scan, im_key, idx, 'CE', None, span_marker='[Mudsa]', action_marker='[Adsa]', in_span=False, in_action_span=False
+	)
 
 	# Garantir neutros e totais, já com PIDE no meio
 	ida_block = {
@@ -534,16 +563,28 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str):
 
 	def push_mv(spans, fonte, dado):
 		for s in spans or []:
-			if s.get('Tokens'):
-				um_block[f"Lista de Multivariações de {fonte}"].append({
-					"Fonte": ("Texto de entrada" if fonte=="Entrada" and dado in ("TEXE","TEFIE") else
-							  "Fala de entrada" if fonte=="Entrada" else
-							  "Texto de saída" if dado in ("TEXIS","TEXFS") else "Fala de saída"),
-					"Dado": dado,
-					"Tokens": s['Tokens'],
-					"Multivars:": ["0.0"],
-					dado: s['ids']
-				})
+			raw_tokens = (s.get('Tokens') or '').strip()
+			if not raw_tokens:
+				continue
+			# Normaliza pontuação e remove pontuação solta no início/fim do span (evita começar com "," etc.)
+			try:
+				clean_tokens = _normalize_punct(raw_tokens)
+			except Exception:
+				clean_tokens = raw_tokens
+			# remove pontuação à esquerda e à direita
+			clean_tokens = re.sub(r"^[\s,\.;:!?—\-]+", "", clean_tokens)
+			clean_tokens = re.sub(r"[\s,\.;:!?—\-]+$", "", clean_tokens)
+			if not clean_tokens:
+				continue
+			um_block[f"Lista de Multivariações de {fonte}"].append({
+				"Fonte": ("Texto de entrada" if fonte=="Entrada" and dado in ("TEXE","TEFIE") else
+						  "Fala de entrada" if fonte=="Entrada" else
+						  "Texto de saída" if dado in ("TEXIS","TEXFS") else "Fala de saída"),
+				"Dado": dado,
+				"Tokens": clean_tokens,
+				"Multivars:": ["0.0"],
+				**{dado: s['ids']}
+			})
 	push_mv(mv_texe, 'Entrada', 'TEXE')
 	push_mv(mv_faden, 'Entrada', 'FADEN')
 	push_mv(mv_tefie, 'Entrada', 'TEFIE')
@@ -687,8 +728,18 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str):
 	ordered_um["Dados extraídos"] = ["TEXE","FADEN","TEFIE","RE","CE","PIDE","TEXIS","FS","TEXFS","RS","CS"]
 	ordered_um["Características de Entrada"] = um_block.get("Características de Entrada", [])
 	ordered_um["Lista de Multivariações de Entrada"] = um_block.get("Lista de Multivariações de Entrada", [])
+	# Totais de Entrada posicionados logo após a lista de multivariações de entrada
+	if um_block.get("Total de Entrada"):
+		ordered_um["Total de Entrada"] = um_block.get("Total de Entrada")
+		# Nome conforme exemplo do usuário: "Ultimo child"
+		ordered_um["Ultimo child"] = um_block.get("ultimo_child_entrada")
 	ordered_um["Características de Saída"] = um_block.get("Características de Saída", [])
 	ordered_um["Lista de Multivariações de Saída"] = um_block.get("Lista de Multivariações de Saída", [])
+	# Totais de Saída posicionados logo após a lista de multivariações de saída
+	if um_block.get("Total de Saída"):
+		ordered_um["Total de Saída"] = um_block.get("Total de Saída")
+		# Evitar chave duplicada: nomear explicitamente como 'Ultimo child (Saída)'
+		ordered_um["Ultimo child (Saída)"] = um_block.get("ultimo_child_saida")
 	return ida_block, ordered_um
 
 	# ===== FIM do PASSO 4 =====
@@ -813,5 +864,3 @@ with st.expander("Passo 5 — Salvar bloco (IDA e UM)", expanded=False):
 				st.error(f"Falha ao salvar blocos: {e}")
 	else:
 		st.info("Gere uma prévia no Passo 4 para habilitar o salvamento.")
-
-
