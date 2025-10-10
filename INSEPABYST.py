@@ -347,7 +347,7 @@ def _sanitize_ida_um(ida_block, um_block, im_key: str):
 	sai["Texto Final de Saída"] = ensure_neutral_list(sai_src.get("Texto Final de Saída"), 'TEXFS')
 	# Totais e último child serão inseridos após o cálculo logo abaixo
 	sai["Reação de Saída"] = sai_src.get("Reação de Saída") or [{"RS": neutral, "t": "", "vars": ["0.0"]}]
-	sai["Contexto de Saída"] = ensure_neutral_list(sai_src.get("Contexto de Saída"), 'CE')
+	sai["Contexto de Saída"] = ensure_neutral_list(sai_src.get("Contexto de Saída"), 'CS')
 	ida_block["Saída"] = sai
 	# PIDE
 	if not ida_block.get("Pensamento Interno"):
@@ -372,7 +372,7 @@ def _sanitize_ida_um(ida_block, um_block, im_key: str):
 		*ids_from(sai.get("Fala de Saída"), 'FS'),
 		*ids_from(sai.get("Texto Final de Saída"), 'TEXFS'),
 		*[x.get('RS') for x in (sai.get("Reação de Saída") or []) if x.get('RS')],
-		*ids_from(sai.get("Contexto de Saída"), 'CE'),
+		*ids_from(sai.get("Contexto de Saída"), 'CS'),
 	]
 	# Normaliza ordem cronológica pelo índice numérico (evita 0.39 ficar após 0.50)
 	def _id_num(s):
@@ -380,13 +380,42 @@ def _sanitize_ida_um(ida_block, um_block, im_key: str):
 		return int(m.group(1)) if m else 0
 	ida_block["Total de Entrada"] = (sorted(total_e, key=_id_num) if total_e else [neutral])
 	ida_block["Total de Saída"] = (sorted(total_s, key=_id_num) if total_s else [neutral])
-	# (Não inserir Totais dentro das seções do IDA; manter estrutura original)
+
+	# Preservar cópias dos totais para uso no UM, pois a reordenação abaixo
+	# move "Total de Saída" para dentro de "Saída" e remove-o do topo do IDA
+	tot_e_for_um = ida_block.get("Total de Entrada", [])
+	tot_s_for_um = ida_block.get("Total de Saída", [])
+
+	# Reordenar IDA para que:
+	# - "Total de Entrada" apareça logo DEPOIS de "Pensamento Interno" (PIDE)
+	# - "Total de Saída" apareça DENTRO de "Saída" logo DEPOIS de "Texto Final de Saída"
+	try:
+		# Inserir Total de Saída dentro da seção Saída APÓS 'Contexto de Saída' (CS)
+		sai_ordered = {}
+		sai_section = ida_block.get("Saída", {})
+		sai_ordered["Texto Inicial de SAÍDA"] = sai_section.get("Texto Inicial de SAÍDA", [])
+		sai_ordered["Fala de Saída"] = sai_section.get("Fala de Saída", [])
+		sai_ordered["Texto Final de Saída"] = sai_section.get("Texto Final de Saída", [])
+		sai_ordered["Reação de Saída"] = sai_section.get("Reação de Saída", [])
+		sai_ordered["Contexto de Saída"] = sai_section.get("Contexto de Saída", [])
+		# Agora o Total de Saída vem depois de CS
+		sai_ordered["Total de Saída"] = ida_block.get("Total de Saída", [])
+		# Construir IDA com ordem específica
+		ida_ordered = {}
+		ida_ordered["Entrada"] = ida_block.get("Entrada", {})
+		ida_ordered["Pensamento Interno"] = ida_block.get("Pensamento Interno", [])
+		ida_ordered["Total de Entrada"] = ida_block.get("Total de Entrada", [])
+		ida_ordered["Saída"] = sai_ordered
+		ida_block = ida_ordered
+	except Exception:
+		pass
 
 	if um_block is not None:
-		um_block["Total de Entrada"] = um_block.get("Total de Entrada") or ida_block["Total de Entrada"]
-		um_block["Total de Saída"] = um_block.get("Total de Saída") or ida_block["Total de Saída"]
-		um_block["ultimo_child_entrada"] = um_block["Total de Entrada"][-1]
-		um_block["ultimo_child_saida"] = um_block["Total de Saída"][-1]
+		# Usar as cópias preservadas para popular o UM
+		um_block["Total de Entrada"] = um_block.get("Total de Entrada") or tot_e_for_um
+		um_block["Total de Saída"] = um_block.get("Total de Saída") or tot_s_for_um
+		um_block["ultimo_child_entrada"] = um_block["Total de Entrada"][-1] if um_block.get("Total de Entrada") else neutral
+		um_block["ultimo_child_saida"] = um_block["Total de Saída"][-1] if um_block.get("Total de Saída") else neutral
 	return ida_block, um_block
 
 def _build_ida_um_from_tpl(secs: dict, im_key: str):
@@ -525,8 +554,8 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str):
 	TEXFS, idx, ids_texfs, mv_texfs, act_texfs, _, _ = _emit_tokens(
 		texfs_scan, im_key, idx, 'TEXFS', 'cas', span_marker='[Mudsa]', action_marker='[Adsa]', in_span=in_mudsa, in_action_span=in_adsa
 	)
-	CE_s, idx, ids_ce_s, _, act_ce_s, _, _ = _emit_tokens(
-		ctx_s_scan, im_key, idx, 'CE', None, span_marker='[Mudsa]', action_marker='[Adsa]', in_span=False, in_action_span=False
+	CS, idx, ids_cs, _, act_cs, _, _ = _emit_tokens(
+		ctx_s_scan, im_key, idx, 'CS', None, span_marker='[Mudsa]', action_marker='[Adsa]', in_span=False, in_action_span=False
 	)
 
 	# Garantir neutros e totais, já com PIDE no meio
@@ -544,7 +573,7 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str):
 			"Fala de Saída": FS,
 			"Texto Final de Saída": TEXFS,
 			"Reação de Saída": RS_list,
-			"Contexto de Saída": CE_s,
+			"Contexto de Saída": CS,
 		},
 	}
 
@@ -694,7 +723,12 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str):
 	ida_block, um_block = _sanitize_ida_um(ida_block, um_block, im_key)
 
 	# Enriquecer UM com bloco por campo e total completo do bloco
-	total_completo = (ida_block.get("Total de Entrada", []) or []) + (ida_block.get("Total de Saída", []) or [])
+	# Observação: após a reordenação, "Total de Saída" fica dentro de "Saída";
+	# portanto usamos o aninhado como fallback para compor o total completo.
+	total_saida_root = ida_block.get("Total de Saída", []) or []
+	if not total_saida_root:
+		total_saida_root = ida_block.get("Saída", {}).get("Total de Saída", []) or []
+	total_completo = (ida_block.get("Total de Entrada", []) or []) + total_saida_root
 	# Fonte dinâmica, apenas para partes presentes (padronizada)
 	fonte_list = []
 	if clean_texe:
