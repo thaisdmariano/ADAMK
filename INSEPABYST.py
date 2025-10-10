@@ -521,7 +521,7 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str):
 	PIDE = []
 	for s in _split_sentences(secs.get('pide','')):
 		s2 = s.strip()
-		if not s2:
+		if not s2: 
 			continue
 		idx += 1
 		safe_im = str(im_key or "0").strip()
@@ -633,26 +633,26 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str):
 	# PIDE limpo por frases
 	pide_lines = [p.strip() for p in _split_sentences(secs.get('pide','')) if p and p.strip()]
 
-	# Monta Bloco por campo (strings limpas por seção)
-	entrada_field_lines = []
+	# Monta Bloco por campo segmentando Entrada/Saída em subcampos
+	entrada_field = {}
 	if clean_texe:
-		entrada_field_lines.append(clean_texe)
+		entrada_field["Texto Inicial de Entrada"] = clean_texe
 	if clean_faden:
-		entrada_field_lines.append(f"—{clean_faden}")
+		# Aqui não usamos travessão; o próprio rótulo indica que é fala
+		entrada_field["Fala de Entrada"] = clean_faden
 	if clean_tefie:
-		entrada_field_lines.append(clean_tefie)
-	entrada_field = "\n".join(entrada_field_lines).strip()
+		entrada_field["Texto Final de Entrada"] = clean_tefie
 
 	pide_field = "\n".join(pide_lines).strip() if pide_lines else ""
 
-	saida_field_lines = []
+	saida_field = {}
 	if clean_texis:
-		saida_field_lines.append(clean_texis)
+		saida_field["Texto Inicial de Saída"] = clean_texis
 	if clean_fs:
-		saida_field_lines.append(f"—{clean_fs}")
+		# Sem travessão aqui também
+		saida_field["Fala de Saída"] = clean_fs
 	if clean_texfs:
-		saida_field_lines.append(clean_texfs)
-	saida_field = "\n".join(saida_field_lines).strip()
+		saida_field["Texto Final de Saída"] = clean_texfs
 
 	bloco_por_campo = {
 		"Entrada": entrada_field,
@@ -758,8 +758,8 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str):
 	ordered_um = {}
 	ordered_um["Bloco por campo"] = bloco_por_campo
 	ordered_um["Fonte"] = fonte_list
-	ordered_um["Total de bloco completo"] = total_completo
 	ordered_um["Dados extraídos"] = ["TEXE","FADEN","TEFIE","RE","CE","PIDE","TEXIS","FS","TEXFS","RS","CS"]
+	ordered_um["Total de bloco completo"] = total_completo
 	ordered_um["Características de Entrada"] = um_block.get("Características de Entrada", [])
 	ordered_um["Lista de Multivariações de Entrada"] = um_block.get("Lista de Multivariações de Entrada", [])
 	# Totais de Entrada posicionados logo após a lista de multivariações de entrada
