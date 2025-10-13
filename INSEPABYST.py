@@ -262,12 +262,15 @@ def _emit_tokens(
 
 		# materializa token
 		idx += 1
-		safe_im = str(im_key or "0").strip()
+		# Corrige o IM para garantir que seja apenas o número (ex: '0', '1', etc.)
+		safe_im = re.sub(r"[^0-9]", "", str(im_key or "0"))
 		tid = f"{safe_im}.{idx}"
 		ids.append(tid)
 		obj = {dado: tid, "t": tk['val'], "vars": ["0.0"]}
 		if current_attr_out and attr_key:
-			obj[attr_key] = [f": {current_attr_out}"]
+			# Remove ':' do início, se houver
+			clean_attr = current_attr_out.lstrip(": ").strip()
+			obj[attr_key] = [clean_attr]
 		out.append(obj)
 		if in_span:
 			span_tokens.append(tk['val'])
@@ -319,7 +322,7 @@ def _build_um_from_attrs(tokens, attr_key: str, fonte: str, dado_key: str):
 	return entries
 
 def _sanitize_ida_um(ida_block, um_block, im_key: str):
-	safe_im = str(im_key or "0").strip()
+	safe_im = re.sub(r"[^0-9]", "", str(im_key or "0"))
 	neutral = f"{safe_im}.0"
 	def ensure_neutral_list(objs, key_name):
 		if objs:
@@ -487,13 +490,15 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str):
 	re_e_val = (secs.get('re_e','') or '').strip()
 	re_s_val = (secs.get('re_s','') or '').strip()
 
+	# Corrige o IM para garantir que seja apenas o número (ex: '0', '1', etc.)
+	im_key_clean = re.sub(r"[^0-9]", "", str(im_key or "0"))
 	# Emitir objetos com ids e atributos
 	idx = 0
 	TEXE, idx, ids_texe, mv_texe, act_texe, in_muden, in_ade = _emit_tokens(
-		texe_scan, im_key, idx, 'TEXE', 'cae', span_marker='[Muden]', action_marker='[Ade]', in_span=False, in_action_span=False
+		texe_scan, im_key_clean, idx, 'TEXE', 'cae', span_marker='[Muden]', action_marker='[Ade]', in_span=False, in_action_span=False
 	)
 	FADEN, idx, ids_faden, mv_faden, act_faden, in_muden, in_ade = _emit_tokens(
-		faden_scan, im_key, idx, 'FADEN', 'cae', span_marker='[Muden]', action_marker='[Ade]', in_span=in_muden, in_action_span=in_ade
+		faden_scan, im_key_clean, idx, 'FADEN', 'cae', span_marker='[Muden]', action_marker='[Ade]', in_span=in_muden, in_action_span=in_ade
 	)
 	# Coletar ações de entrada a partir de spans [Ade] (sem quebrar a ordem de IDs de RE)
 	ade_texts = []
@@ -506,35 +511,35 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str):
 	RE_list = []
 	if re_e_val or ade_texts:
 		idx += 1
-		safe_im = str(im_key or "0").strip()
+		safe_im = im_key_clean
 		re_t = re_e_val.strip() if re_e_val else ""
 		vars_list = (ade_texts if ade_texts else ["0.0"])  # vars vêm do ADE
 		RE_list.append({"RE": f"{safe_im}.{idx}", "t": re_t, "vars": vars_list})
 	TEFIE, idx, ids_tefie, mv_tefie, act_tefie, _, _ = _emit_tokens(
-		tefie_scan, im_key, idx, 'TEFIE', 'cae', span_marker='[Muden]', action_marker='[Ade]', in_span=in_muden, in_action_span=in_ade
+		tefie_scan, im_key_clean, idx, 'TEFIE', 'cae', span_marker='[Muden]', action_marker='[Ade]', in_span=in_muden, in_action_span=in_ade
 	)
 	CE_e, idx, ids_ce_e, _, act_ce_e, _, _ = _emit_tokens(
-		ctx_e_scan, im_key, idx, 'CE', None, span_marker='[Muden]', action_marker='[Ade]', in_span=False, in_action_span=False
+		ctx_e_scan, im_key_clean, idx, 'CE', None, span_marker='[Muden]', action_marker='[Ade]', in_span=False, in_action_span=False
 	)
 
 	# PIDE por frase (IDs após Entrada e antes de Saída)
 	PIDE = []
 	for s in _split_sentences(secs.get('pide','')):
 		s2 = s.strip()
-		if not s2: 
+		if not s2:
 			continue
 		idx += 1
-		safe_im = str(im_key or "0").strip()
+		safe_im = im_key_clean
 		tid = f"{safe_im}.{idx}"
 		PIDE.append({"PIDE": tid, "t": s2})
 
 	# Agora emitir Saída, mantendo IDs após PIDE
 	# TEXIS também deve captar CAS quando houver label na Saída
 	TEXIS, idx, ids_texis, mv_texis, act_texis, in_mudsa, in_adsa = _emit_tokens(
-		texis_scan, im_key, idx, 'TEXIS', 'cas', span_marker='[Mudsa]', action_marker='[Adsa]', in_span=False, in_action_span=False
+		texis_scan, im_key_clean, idx, 'TEXIS', 'cas', span_marker='[Mudsa]', action_marker='[Adsa]', in_span=False, in_action_span=False
 	)
 	FS, idx, ids_fs, mv_fs, act_fs, in_mudsa, in_adsa = _emit_tokens(
-		fs_scan, im_key, idx, 'FS', 'cas', span_marker='[Mudsa]', action_marker='[Adsa]', in_span=in_mudsa, in_action_span=in_adsa
+		fs_scan, im_key_clean, idx, 'FS', 'cas', span_marker='[Mudsa]', action_marker='[Adsa]', in_span=in_mudsa, in_action_span=in_adsa
 	)
 	# Coletar ações de saída a partir de spans [Adsa] (sem quebrar a ordem de IDs de RS)
 	adsa_texts = []
@@ -547,15 +552,15 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str):
 	RS_list = []
 	if re_s_val or adsa_texts:
 		idx += 1
-		safe_im = str(im_key or "0").strip()
+		safe_im = im_key_clean
 		rs_t = re_s_val.strip() if re_s_val else ""
 		vars_list_s = (adsa_texts if adsa_texts else ["0.0"])  # vars vêm do ADSA
 		RS_list.append({"RS": f"{safe_im}.{idx}", "t": rs_t, "vars": vars_list_s})
 	TEXFS, idx, ids_texfs, mv_texfs, act_texfs, _, _ = _emit_tokens(
-		texfs_scan, im_key, idx, 'TEXFS', 'cas', span_marker='[Mudsa]', action_marker='[Adsa]', in_span=in_mudsa, in_action_span=in_adsa
+		texfs_scan, im_key_clean, idx, 'TEXFS', 'cas', span_marker='[Mudsa]', action_marker='[Adsa]', in_span=in_mudsa, in_action_span=in_adsa
 	)
 	CS, idx, ids_cs, _, act_cs, _, _ = _emit_tokens(
-		ctx_s_scan, im_key, idx, 'CS', None, span_marker='[Mudsa]', action_marker='[Adsa]', in_span=False, in_action_span=False
+		ctx_s_scan, im_key_clean, idx, 'CS', None, span_marker='[Mudsa]', action_marker='[Adsa]', in_span=False, in_action_span=False
 	)
 
 	# Garantir neutros e totais, já com PIDE no meio
