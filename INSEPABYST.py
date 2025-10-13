@@ -29,6 +29,11 @@ _OUT_UM = os.path.join(_BASE_DIR, "memoria.json")
 
 # Carregar JSON simples (sem cache)
 def _reload_data():
+    """Recarrega os dados globais _ida_data e _um_data dos arquivos JSON no diretório pai.
+
+    Tenta carregar inconsciente.json e memoria.json. Se não existirem, inicializa com estruturas vazias.
+    Garante que as estruturas tenham as chaves mínimas {"IDA": {"IM": {}}} e {"UM": {}}.
+    """
     global _ida_data, _um_data
     try:
         if os.path.exists(_OUT_IDA):
@@ -175,8 +180,16 @@ else:
 # Funções comuns para parsing e extração (refatoradas para reduzir redundância)
 # =============================================
 
-def _extract_text_parts(text: str):
-    """Extrai (antes_do_travessao, fala_ate_ponto, resto_pos_fala) de um texto."""
+def _extract_text_parts(text: str, re_s: str = ""):
+    """Extrai partes de texto de entrada/saída: antes do travessão (texe/texis), fala até o último ponto seguido de maiúscula (faden/fs), resto após (tefie/texfs).
+
+    Args:
+        text (str): Texto da entrada ou saída no formato "antes—fala. resto".
+        re_s (str): Reação de saída, usada como delimitador para TEXFS.
+
+    Returns:
+        tuple: (antes, fala, resto) onde antes é texto inicial, fala é fala até último . antes de maiúscula, resto é texto final.
+    """
     text = (text or "").strip()
     if not text:
         return "", "", ""
@@ -185,18 +198,38 @@ def _extract_text_parts(text: str):
         return text, "", ""
     before = text[:idx].strip()
     after = text[idx + 1:].lstrip()
-    p = after.find(".")
-    if p < 0:
-        fala = after.strip()
-        rest = ""
+    if not after:
+        return before, "", ""
+    # Se há reação, dividir TEXFS após a reação
+    if re_s and re_s in after:
+        fala = after.split(re_s, 1)[0].strip()
+        rest = after.split(re_s, 1)[1].strip()
     else:
-        fala = after[:p + 1].strip()
-        rest = after[p + 1:].lstrip()
+        # Dividir after em sentenças baseadas em pontuação
+        sentences = re.split(r'(?<=[.!?])\s+', after)
+        sentences = [s.strip() for s in sentences if s.strip()]
+        if sentences:
+            fala = sentences[0]
+            rest = ' '.join(sentences[1:]) if len(sentences) > 1 else ""
+        else:
+            fala = after.strip()
+            rest = ""
     return before, fala, rest
 
 
 def _parse_tpl_sections(raw: str):
-    """Extrai seções do TPL único."""
+    """Parseia o texto TPL bruto em seções estruturadas para processamento INSEPA.
+
+    Divide o texto em componentes: entrada (TEXE, FADEN, TEFIE), reação, contexto,
+    pensamento interno (PIDE), saída (TEXIS, FS, TEXFS), reação saída, contexto saída.
+
+    Args:
+        raw (str): Texto TPL bruto com marcadores de seção.
+
+    Returns:
+        dict: Dicionário com chaves 'entrada', 're_e', 'ce_e', 'pide', 'saida', 're_s', 'cs'.
+              Cada valor é uma string com o texto correspondente.
+    """
     s = (raw or "").strip() + "\n<END>:\n"
 
     def grab(name_pat: str, next_pats: list, start_pos: int = 0):
@@ -229,6 +262,14 @@ def _parse_tpl_sections(raw: str):
 
 
 def _scan_tokens(text: str):
+    """Tokeniza o texto em palavras, pontuação e marcadores especiais.
+
+    Args:
+        text (str): Texto a ser tokenizado.
+
+    Returns:
+        list: Lista de dicionários com 'kind' ('word', 'punct', 'marker') e 'val'.
+    """
     tokens = []
     if not text:
         return tokens
@@ -254,6 +295,22 @@ def _emit_tokens(
         in_span: bool = False,
         in_action_span: bool = False,
 ):
+    """Emite tokens estruturados com IDs únicos para um campo específico.
+
+    Args:
+        scan (list): Lista de tokens do _scan_tokens.
+        im_key (str): Chave do Índice Mãe.
+        start_idx (int): Índice inicial para IDs.
+        dado (str): Tipo de dado (ex.: 'TEXE').
+        attr_key (str, optional): Chave para atributos (ex.: 'cae').
+        span_marker (str, optional): Marcador para spans multivariações.
+        action_marker (str, optional): Marcador para ações.
+        in_span (bool): Se está em span.
+        in_action_span (bool): Se está em action span.
+
+    Returns:
+        tuple: (out, idx, ids, spans, action_spans, in_span, in_action_span)
+    """
     out = []
     ids = []
     spans = []
@@ -297,7 +354,6 @@ def _emit_tokens(
         idx += 1
         safe_im = re.sub(r"[^0-9]", "", str(im_key or "0"))
         tid = f"{safe_im}.{idx}"
-        ids.append(tid)
         obj = {dado: tid, "t": tk['val'], "vars": ["0.0"]}
         if current_attr_out and attr_key:
             clean_attr = current_attr_out.lstrip(": ").strip()
@@ -320,6 +376,14 @@ def _emit_tokens(
 
 
 def _split_sentences(text: str):
+    """Divide o texto em sentenças baseado em pontuação.
+
+    Args:
+        text (str): Texto a dividir.
+
+    Returns:
+        list: Lista de sentenças.
+    """
     if not text:
         return []
     parts = re.split(r"(?<=[\.!?])\s+", text.strip())
@@ -327,6 +391,17 @@ def _split_sentences(text: str):
 
 
 def _build_um_from_attrs(tokens, attr_key: str, fonte: str, dado_key: str):
+    """Constrói entradas de características para UM a partir de tokens com atributos.
+
+    Args:
+        tokens (list): Lista de tokens.
+        attr_key (str): Chave do atributo (ex.: 'cae').
+        fonte (str): Fonte (ex.: 'Texto de entrada').
+        dado_key (str): Chave do dado (ex.: 'TEXE').
+
+    Returns:
+        list: Lista de entradas de características.
+    """
     entries = []
     cur = None
     cur_tokens = []
@@ -359,6 +434,16 @@ def _build_um_from_attrs(tokens, attr_key: str, fonte: str, dado_key: str):
 
 
 def _sanitize_ida_um(ida_block, um_block, im_key: str):
+    """Sanitiza e completa os blocos IDA e UM com marcadores neutros e listas totais.
+
+    Args:
+        ida_block (dict): Bloco IDA.
+        um_block (dict): Bloco UM.
+        im_key (str): Chave do IM.
+
+    Returns:
+        tuple: (ida_block, um_block) sanitizados.
+    """
     safe_im = re.sub(r"[^0-9]", "", str(im_key or "0"))
     neutral = f"{safe_im}.0"
 
@@ -452,7 +537,15 @@ def _sanitize_ida_um(ida_block, um_block, im_key: str):
 
 
 def _get_max_idx_in_im(im_data, im_key):
-    """Retorna o maior idx usado no IM (ex.: 120 para 0.120)"""
+    """Retorna o maior índice usado no IM (ex.: 120 para 0.120).
+
+    Args:
+        im_data (dict): Dados do IM.
+        im_key (str): Chave do IM.
+
+    Returns:
+        int: Maior idx.
+    """
     max_idx = 0
     for bloco in im_data.get("blocos", []):
         for section in ["Entrada", "Saída"]:
@@ -474,6 +567,17 @@ def _get_max_idx_in_im(im_data, im_key):
 
 
 def _build_ida_um_from_tpl(secs: dict, im_key: str, start_idx: int = 0):
+    """Constrói blocos IDA e UM a partir de seções TPL parseadas.
+
+    Args:
+        secs (dict): Seções parseadas do TPL.
+        im_key (str): Chave do IM.
+        start_idx (int): Índice inicial.
+
+    Returns:
+        tuple: (ida_block, um_block, idx) onde idx é o próximo índice.
+    """
+
     def _clean_text(s: str) -> str:
         if not s:
             return ""
@@ -510,12 +614,12 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str, start_idx: int = 0):
             texts.append(" ".join(buf).strip())
         return texts
 
-    ent_before, ent_fala, ent_rest = _extract_text_parts(secs.get('entrada', ''))
+    ent_before, ent_fala, ent_rest = _extract_text_parts(secs.get('entrada', ''), "")
     texe_scan = _scan_tokens(ent_before)
     faden_scan = _scan_tokens(ent_fala)
     tefie_scan = _scan_tokens(ent_rest)
 
-    saida_before, saida_fala, saida_rest = _extract_text_parts(secs.get('saida', ''))
+    saida_before, saida_fala, saida_rest = _extract_text_parts(secs.get('saida', ''), secs.get('re_s', ''))
     texis_scan = _scan_tokens(saida_before)
     fs_scan = _scan_tokens(saida_fala)
     texfs_scan = _scan_tokens(saida_rest)
@@ -610,8 +714,8 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str, start_idx: int = 0):
         "Saída": {
             "Texto Inicial de SAÍDA": TEXIS,
             "Fala de Saída": FS,
-            "Texto Final de Saída": TEXFS,
             "Reação de Saída": RS_list,
+            "Texto Final de Saída": TEXFS,
             "Contexto de Saída": CS,
         },
     }
@@ -706,10 +810,10 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str, start_idx: int = 0):
             clean_lines.append(clean_texe)
         if clean_faden:
             clean_lines.append(f"—{clean_faden}")
-        if clean_tefie:
-            clean_lines.append(clean_tefie)
         if re_e_val:
             clean_lines.append(f"Reação: {re_e_val}")
+        if clean_tefie:
+            clean_lines.append(clean_tefie)
         if clean_ctx_e:
             clean_lines.append(f"Contexto: {clean_ctx_e}")
         clean_lines.append("")
@@ -774,28 +878,338 @@ def _build_ida_um_from_tpl(secs: dict, im_key: str, start_idx: int = 0):
     if clean_ctx_s:
         fonte_list.append("Contexto de Saída")
 
-    ordered_um = {}
-    ordered_um["Bloco por campo"] = bloco_por_campo
-    ordered_um["Fonte"] = fonte_list
-    ordered_um["Dados extraídos"] = ["TEXE", "FADEN", "TEFIE", "RE", "CE", "PIDE", "TEXIS", "FS", "TEXFS", "RS", "CS"]
-    ordered_um["Total de bloco completo"] = total_completo
-    ordered_um["Características de Entrada"] = um_block.get("Características de Entrada", [])
-    ordered_um["Lista de Multivariações de Entrada"] = um_block.get("Lista de Multivariações de Entrada", [])
-    if um_block.get("Total de Entrada"):
-        ordered_um["Total de Entrada"] = um_block.get("Total de Entrada")
-        ordered_um["ultimo_child_entrada"] = um_block.get("ultimo_child_entrada")
-    ordered_um["Características de Saída"] = um_block.get("Características de Saída", [])
-    ordered_um["Lista de Multivariações de Saída"] = um_block.get("Lista de Multivariações de Saída", [])
-    if um_block.get("Total de Saída"):
-        ordered_um["Total de Saída"] = um_block.get("Total de Saída")
-        ordered_um["ultimo_child_saida"] = um_block.get("ultimo_child_saida")
+    # Construir o UM no formato original
+    ordered_um = {
+        "Bloco por campo": bloco_por_campo,
+        "Fonte": fonte_list,
+        "Dados extraídos": ["TEXE", "FADEN", "TEFIE", "RE", "CE", "PIDE", "TEXIS", "FS", "TEXFS", "RS", "CS"],
+        "Total de bloco completo": sorted(total_completo, key=lambda s: int(s.split('.')[-1]) if '.' in s else 0),
+        "Características de Entrada": um_block.get("Características de Entrada", []),
+        "Lista de Multivariações de Entrada": um_block.get("Lista de Multivariações de Entrada", []),
+        "Total de Entrada": ida_block.get("Total de Entrada", []),
+        "ultimo_child_entrada": ida_block.get("Total de Entrada", [])[-1] if ida_block.get(
+            "Total de Entrada") else None,
+        "Características de Saída": um_block.get("Características de Saída", []),
+        "Lista de Multivariações de Saída": um_block.get("Lista de Multivariações de Saída", []),
+        "Total de Saída": ida_block.get("Total de Saída", []),
+        "ultimo_child_saida": ida_block.get("Total de Saída", [])[-1] if ida_block.get("Total de Saída") else None,
+    }
+
+    # Adicionar textos por campo ao IDA para blocos por campos
+    ida_block["Texto Inicial de Entrada (texto)"] = clean_texe
+    ida_block["Fala de Entrada (texto)"] = clean_faden
+    ida_block["Texto Final de Entrada (texto)"] = clean_tefie
+    ida_block["Reação de Entrada (texto)"] = re_e_val
+    ida_block["Contexto de Entrada (texto)"] = clean_ctx_e
+    ida_block["Pensamento Interno (texto)"] = "\n".join(pide_lines).strip()
+    ida_block["Texto Inicial de Saída (texto)"] = clean_texis
+    ida_block["Fala de Saída (texto)"] = clean_fs
+    ida_block["Texto Final de Saída (texto)"] = clean_texfs
+    ida_block["Reação de Saída (texto)"] = re_s_val
+    ida_block["Contexto de Saída (texto)"] = clean_ctx_s
+
     return ida_block, ordered_um, idx
 
 
+def _extract_text_from_tokens(token_list):
+    """Extrai texto de uma lista de tokens (dicts com 't')."""
+    if isinstance(token_list, list):
+        return ' '.join([item.get('t', '') for item in token_list if isinstance(item, dict)])
+    return ''
+
+
+def _extract_pide_text(pide_list):
+    """Extrai texto de PIDE (lista de strings ou dicts)."""
+    if isinstance(pide_list, list):
+        texts = []
+        for item in pide_list:
+            if isinstance(item, dict):
+                texts.append(item.get('t', ''))
+            elif isinstance(item, str):
+                texts.append(item)
+        return '\n'.join(texts)
+    return ''
+
+
+def _display_narrative_edit(bloco_id, texe, faden, tefie, reacao, contexto, pide, texis, fs, texfs, reacao_s,
+                            contexto_s, im_key):
+    """Exibe interface de edição narrativa para um bloco, com text_areas grandes e botões para salvar/cancelar/deletar/reduzir a neutro.
+
+    Args:
+        bloco_id: ID do bloco.
+        texe, faden, tefie, reacao, contexto, pide, texis, fs, texfs, reacao_s, contexto_s: Textos atuais dos campos.
+        im_key: Chave do IM.
+    """
+    edit_key = f"edit_narr_{bloco_id}"
+    save_key = f"save_narr_{bloco_id}"
+    delete_key = f"delete_narr_{bloco_id}"
+    neutral_key = f"neutral_narr_{bloco_id}"
+
+    # Construir textos narrativos
+    entrada_narr = f"{texe} —{faden}. {tefie}"
+    saida_narr = f"{texis} —{fs}. {texfs}"
+
+    # Inicializar session_state para edição
+    if f"narr_entrada_{bloco_id}" not in st.session_state:
+        st.session_state[f"narr_entrada_{bloco_id}"] = entrada_narr
+    if f"narr_reacao_{bloco_id}" not in st.session_state:
+        st.session_state[f"narr_reacao_{bloco_id}"] = reacao
+    if f"narr_contexto_{bloco_id}" not in st.session_state:
+        st.session_state[f"narr_contexto_{bloco_id}"] = contexto
+    if f"narr_pide_{bloco_id}" not in st.session_state:
+        st.session_state[f"narr_pide_{bloco_id}"] = pide
+    if f"narr_saida_{bloco_id}" not in st.session_state:
+        st.session_state[f"narr_saida_{bloco_id}"] = saida_narr
+    if f"narr_reacao_s_{bloco_id}" not in st.session_state:
+        st.session_state[f"narr_reacao_s_{bloco_id}"] = reacao_s
+    if f"narr_contexto_s_{bloco_id}" not in st.session_state:
+        st.session_state[f"narr_contexto_s_{bloco_id}"] = contexto_s
+
+    st.markdown(f"**Bloco {bloco_id}:**")
+
+    if st.session_state.get(edit_key, False):
+        # Modo edição
+        st.text_area("Entrada:", value=st.session_state[f"narr_entrada_{bloco_id}"], height=100,
+                     key=f"ta_entrada_{bloco_id}")
+        st.text_input("Reação:", value=st.session_state[f"narr_reacao_{bloco_id}"], key=f"ti_reacao_{bloco_id}")
+        st.text_area("Contexto:", value=st.session_state[f"narr_contexto_{bloco_id}"], height=50,
+                     key=f"ta_contexto_{bloco_id}")
+        st.text_area("Pensamento Interno:", value=st.session_state[f"narr_pide_{bloco_id}"], height=100,
+                     key=f"ta_pide_{bloco_id}")
+        st.text_area("Saída:", value=st.session_state[f"narr_saida_{bloco_id}"], height=100, key=f"ta_saida_{bloco_id}")
+        st.text_input("Reação (Saída):", value=st.session_state[f"narr_reacao_s_{bloco_id}"],
+                      key=f"ti_reacao_s_{bloco_id}")
+        st.text_area("Contexto (Saída):", value=st.session_state[f"narr_contexto_s_{bloco_id}"], height=50,
+                     key=f"ta_contexto_s_{bloco_id}")
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            if st.button("SALVAR", key=save_key):
+                # Salvar valores editados
+                entrada_edit = st.session_state[f"ta_entrada_{bloco_id}"].strip()
+                reacao_edit = st.session_state[f"ti_reacao_{bloco_id}"].strip()
+                contexto_edit = st.session_state[f"ta_contexto_{bloco_id}"].strip()
+                pide_edit = st.session_state[f"ta_pide_{bloco_id}"].strip()
+                saida_edit = st.session_state[f"ta_saida_{bloco_id}"].strip()
+                reacao_s_edit = st.session_state[f"ti_reacao_s_{bloco_id}"].strip()
+                contexto_s_edit = st.session_state[f"ta_contexto_s_{bloco_id}"].strip()
+
+                # Parsear entrada: antes de —, texe; entre — e ., fala; depois ., tefie
+                if "—" in entrada_edit:
+                    parts = entrada_edit.split("—", 1)
+                    texe_edit = parts[0].strip()
+                    rest = parts[1]
+                    if "." in rest:
+                        fala_parts = rest.split(".", 1)
+                        faden_edit = fala_parts[0].strip()
+                        tefie_edit = fala_parts[1].strip()
+                    else:
+                        faden_edit = rest.strip()
+                        tefie_edit = ""
+                else:
+                    texe_edit = entrada_edit
+                    faden_edit = ""
+                    tefie_edit = ""
+
+                # Similar para saída
+                if "—" in saida_edit:
+                    parts = saida_edit.split("—", 1)
+                    texis_edit = parts[0].strip()
+                    rest = parts[1]
+                    if "." in rest:
+                        fs_parts = rest.split(".", 1)
+                        fs_edit = fs_parts[0].strip()
+                        texfs_edit = fs_parts[1].strip()
+                    else:
+                        fs_edit = rest.strip()
+                        texfs_edit = ""
+                else:
+                    texis_edit = saida_edit
+                    fs_edit = ""
+                    texfs_edit = ""
+
+                # Atualizar session_state
+                st.session_state[f"value_{bloco_id}_texe"] = texe_edit
+                st.session_state[f"value_{bloco_id}_fala"] = faden_edit
+                st.session_state[f"value_{bloco_id}_tefie"] = tefie_edit
+                st.session_state[f"value_{bloco_id}_reacao"] = reacao_edit
+                st.session_state[f"value_{bloco_id}_contexto"] = contexto_edit
+                st.session_state[f"value_{bloco_id}_pide"] = pide_edit
+                st.session_state[f"value_{bloco_id}_texis"] = texis_edit
+                st.session_state[f"value_{bloco_id}_fala_s"] = fs_edit
+                st.session_state[f"value_{bloco_id}_texfs"] = texfs_edit
+                st.session_state[f"value_{bloco_id}_reacao_s"] = reacao_s_edit
+                st.session_state[f"value_{bloco_id}_contexto_s"] = contexto_s_edit
+
+                st.session_state[edit_key] = False
+                st.success(f"Bloco {bloco_id} salvo!")
+        with col2:
+            if st.button("CANCELAR", key=f"cancel_narr_{bloco_id}"):
+                st.session_state[edit_key] = False
+        with col3:
+            if st.button("DELETAR", key=delete_key):
+                st.session_state[f"delete_{bloco_id}"] = True
+                st.warning(f"Bloco {bloco_id} marcado para deletar. Confirme abaixo.")
+        with col4:
+            if st.button("Reduzir a Neutro", key=neutral_key):
+                st.session_state[f"narr_entrada_{bloco_id}"] = ""
+                st.session_state[f"narr_reacao_{bloco_id}"] = ""
+                st.session_state[f"narr_contexto_{bloco_id}"] = ""
+                st.session_state[f"narr_pide_{bloco_id}"] = ""
+                st.session_state[f"narr_saida_{bloco_id}"] = ""
+                st.session_state[f"narr_reacao_s_{bloco_id}"] = ""
+                st.session_state[f"narr_contexto_s_{bloco_id}"] = ""
+                st.info(f"Bloco {bloco_id} reduzido a neutro!")
+    else:
+        # Modo visualização
+        st.write(f"**Entrada:** {entrada_narr}")
+        st.write(f"**Reação:** {reacao}")
+        st.write(f"**Contexto:** {contexto}")
+        st.write(f"**Pensamento Interno:** {pide}")
+        st.write(f"**Saída:** {saida_narr}")
+        st.write(f"**Reação (Saída):** {reacao_s}")
+        st.write(f"**Contexto (Saída):** {contexto_s}")
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            if st.button("EDITAR", key=f"btn_edit_narr_{bloco_id}"):
+                st.session_state[edit_key] = True
+        with col2:
+            if st.button("DELETAR", key=delete_key):
+                st.session_state[f"delete_{bloco_id}"] = True
+                st.warning(f"Bloco {bloco_id} marcado para deletar. Confirme abaixo.")
+        with col3:
+            if st.button("Reduzir a Neutro", key=neutral_key):
+                st.session_state[f"narr_entrada_{bloco_id}"] = ""
+                st.session_state[f"narr_reacao_{bloco_id}"] = ""
+                st.session_state[f"narr_contexto_{bloco_id}"] = ""
+                st.session_state[f"narr_pide_{bloco_id}"] = ""
+                st.session_state[f"narr_saida_{bloco_id}"] = ""
+                st.session_state[f"narr_reacao_s_{bloco_id}"] = ""
+                st.session_state[f"narr_contexto_s_{bloco_id}"] = ""
+                st.info(f"Bloco {bloco_id} reduzido a neutro!")
+        with col4:
+            if st.button("SALVAR", key=save_key):
+                st.info(f"Bloco {bloco_id} pronto para salvar no lote.")
+
+
+def _display_editable_field(label, current_value, bloco_id, field_key, im_key):
+    """Exibe um campo editável com valor atual e botões para editar/deletar/salvar/reduzir a neutro.
+
+    Args:
+        label (str): Rótulo do campo.
+        current_value (str): Valor atual do campo.
+        bloco_id: ID do bloco.
+        field_key (str): Chave do campo.
+        im_key: Chave do IM.
+    """
+    edit_key = f"edit_{bloco_id}_{field_key}"
+    delete_key = f"delete_{bloco_id}_{field_key}"
+    neutral_key = f"neutral_{bloco_id}_{field_key}"
+    save_key = f"save_{bloco_id}_{field_key}"
+    cancel_key = f"cancel_{bloco_id}_{field_key}"
+
+    if st.session_state.get(edit_key, False):
+        # Modo edição: mostrar text_area e botões salvar/cancelar
+        st.write(f"**Editando {label}:** (Valor atual: {current_value[:50]}...)")  # Debug
+        new_value = st.text_area(f"{label}", value=current_value, key=f"ta_{bloco_id}_{field_key}")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Salvar", key=save_key):
+                # Salvar o novo valor
+                st.session_state[f"value_{bloco_id}_{field_key}"] = new_value.strip()
+                st.session_state[edit_key] = False
+                st.success(f"{label} salvo!")
+        with col2:
+            if st.button("Cancelar", key=cancel_key):
+                st.session_state[edit_key] = False
+    else:
+        # Modo visualização: mostrar valor e botões
+        st.write(
+            f"**{label}:** {current_value[:100]}..." if len(current_value) > 100 else f"**{label}:** {current_value}")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            if st.button("EDITAR", key=f"btn_edit_{bloco_id}_{field_key}"):
+                st.session_state[edit_key] = True
+        with col2:
+            if st.button("DELETAR", key=delete_key):
+                st.session_state[f"value_{bloco_id}_{field_key}"] = ""
+                st.success(f"{label} deletado (limpo)!")
+        with col3:
+            if st.button("Reduzir a Neutro", key=neutral_key):
+                st.session_state[f"value_{bloco_id}_{field_key}"] = ""
+                st.info(f"{label} reduzido a neutro!")
+        with col4:
+            if st.button("SALVAR", key=f"btn_save_{bloco_id}_{field_key}"):
+                # Aqui, talvez salvar individualmente, mas por enquanto, apenas confirma
+                st.info(f"{label} pronto para salvar no bloco.")  # Função para reconstruir secs de um bloco
+
+
+def _rebuild_secs_from_fields(entrada, reacao, contexto, pide, saida, reacao_s, contexto_s, bloco_id):
+    """Reconstrói seções TPL a partir dos valores editados em session_state.
+
+    Args:
+        entrada, reacao, contexto, pide, saida, reacao_s, contexto_s: Valores padrão (usados se não em session_state).
+        bloco_id: ID do bloco.
+
+    Returns:
+        dict: Seções reconstruídas no formato TPL.
+    """
+    # Usar valores de session_state se existirem
+    entrada_texe = st.session_state.get(f"value_{bloco_id}_texe", entrada.get('Texto Inicial de Entrada', ''))
+    entrada_fala = st.session_state.get(f"value_{bloco_id}_fala", entrada.get('Fala de Entrada', ''))
+    entrada_tefie = st.session_state.get(f"value_{bloco_id}_tefie", entrada.get('Texto Final de Entrada', ''))
+    reacao_val = st.session_state.get(f"value_{bloco_id}_reacao", reacao)
+    contexto_val = st.session_state.get(f"value_{bloco_id}_contexto", contexto)
+    pide_val = st.session_state.get(f"value_{bloco_id}_pide", pide)
+    saida_texis = st.session_state.get(f"value_{bloco_id}_texis", saida.get('Texto Inicial de Saída', ''))
+    saida_fala = st.session_state.get(f"value_{bloco_id}_fala_s", saida.get('Fala de Saída', ''))
+    saida_texfs = st.session_state.get(f"value_{bloco_id}_texfs", saida.get('Texto Final de Saída', ''))
+    reacao_s_val = st.session_state.get(f"value_{bloco_id}_reacao_s", reacao_s)
+    contexto_s_val = st.session_state.get(f"value_{bloco_id}_contexto_s", contexto_s)
+
+    return {
+        'entrada': f"{entrada_texe}—{entrada_fala}.{entrada_tefie}",
+        're_e': reacao_val,
+        'ce_e': contexto_val,
+        'pide': pide_val,
+        'saida': f"{saida_texis}—{saida_fala}.{saida_texfs}",
+        're_s': reacao_s_val,
+        'cs': contexto_s_val,
+    }
+
+
 def _rebuild_all_blocks_with_new_ids(im_key, edited_blocks):
-    """Recalcula IDs para todos os blocos editados, mantendo continuidade."""
+    """Recalcula IDs para todos os blocos editados, mantendo continuidade e evitando duplicatas.
+
+    Args:
+        im_key (str): Chave do IM.
+        edited_blocks (list): Lista de blocos editados com secs.
+
+    Returns:
+        list: Lista de prévias com IDs realinhados.
+    """
+    # Calcular o max_idx atual no IM
+    max_idx = 0
+    for bloco in _ida_data.get("IDA", {}).get("IM", {}).get(im_key, {}).get("blocos", []):
+        for section in ["Entrada", "Saída"]:
+            if section in bloco:
+                for sub in bloco[section].values():
+                    if isinstance(sub, list):
+                        for item in sub:
+                            if isinstance(item, dict) and item:
+                                first_key = list(item.keys())[0]
+                                id_value = item[first_key]
+                                if "." in str(id_value):
+                                    parts = str(id_value).split(".")
+                                    if len(parts) == 2 and parts[0] == str(im_key):
+                                        try:
+                                            idx = int(parts[1])
+                                            max_idx = max(max_idx, idx)
+                                        except ValueError:
+                                            pass
+    running_idx = max_idx
     new_previas = []
-    running_idx = 1  # Começar do 1, ou ajustar se necessário
     for idx, edited in enumerate(edited_blocks):
         secs = edited['secs']
         try:
@@ -851,7 +1265,7 @@ with st.expander("Passo 3 — Prévia IDA/UM (modelo README)", expanded=True):
                 except Exception:
                     max_um = 0
                 base_bloco_id = max(max_ida, max_um) + 1 if (max_ida or max_um) else 1
-                running_idx = _get_max_idx_in_im(im_meta, im_for_ids) + 1
+                running_idx = _get_max_idx_in_im(im_meta, im_for_ids)
 
                 for idx, raw_block in enumerate(raw_blocks):
                     secs = _parse_tpl_sections(raw_block)
@@ -922,7 +1336,7 @@ with st.expander("Passo 3 — Prévia IDA/UM (modelo README)", expanded=True):
         blocos_existentes = im_meta.get("blocos", [])
         if blocos_existentes:
             st.caption(
-                "Edite os campos abaixo. Após editar, clique em 'Aplicar Edições e Realinhar IDs' para recalcular tudo.")
+                "Edite os campos individualmente abaixo. Use os botões para editar, deletar ou reduzir a neutro. Após edições, clique em 'Aplicar Edições e Realinhar IDs' para recalcular tudo.")
 
             # Botão para deletar todos os blocos
             st.markdown("#### Deletar Todos os Blocos do IM Selecionado")
@@ -953,63 +1367,74 @@ with st.expander("Passo 3 — Prévia IDA/UM (modelo README)", expanded=True):
 
             edited_blocks = []
             for idx, bloco in enumerate(blocos_existentes):
-                with st.expander(f"Editar Bloco {bloco.get('bloco_id', idx + 1)}", expanded=False):
-                    bloco_por_campo = bloco.get('um_block', {}).get('Bloco por campo', {})
-                    entrada = bloco_por_campo.get('Entrada', {})
-                    reacao = bloco_por_campo.get('Reação', '')
-                    contexto = bloco_por_campo.get('Contexto', '')
-                    pide = bloco_por_campo.get('Pensamento Interno', '')
-                    saida = bloco_por_campo.get('Saída', {})
-                    reacao_s = bloco_por_campo.get('Reação (Saída)', '')
-                    contexto_s = bloco_por_campo.get('Contexto (Saída)', '')
+                bloco_id = bloco.get('bloco_id', idx + 1)
+                with st.expander(f"Bloco {bloco_id}:", expanded=False):
+                    # Extrair textos dos tokens no IDA
+                    entrada_tokens = bloco.get("Entrada", {})
+                    texe_text = _extract_text_from_tokens(entrada_tokens.get("Texto Inicial de Entrada", []))
+                    faden_text = _extract_text_from_tokens(entrada_tokens.get("Fala de Entrada", []))
+                    tefie_text = _extract_text_from_tokens(entrada_tokens.get("Texto Final de Entrada", []))
+                    reacao_text = _extract_text_from_tokens(entrada_tokens.get("Reação", []))
+                    contexto_text = _extract_text_from_tokens(entrada_tokens.get("Contexto", []))
+                    pide_text = _extract_pide_text(bloco.get("Pensamento Interno", []))
 
-                    # Campos editáveis
-                    new_entrada_texe = st.text_area("Texto Inicial de Entrada",
-                                                    value=entrada.get('Texto Inicial de Entrada', ''),
-                                                    key=f"edit_texe_{idx}")
-                    new_entrada_fala = st.text_area("Fala de Entrada", value=entrada.get('Fala de Entrada', ''),
-                                                    key=f"edit_fala_{idx}")
-                    new_entrada_tefie = st.text_area("Texto Final de Entrada",
-                                                     value=entrada.get('Texto Final de Entrada', ''),
-                                                     key=f"edit_tefie_{idx}")
-                    new_reacao = st.text_area("Reação", value=reacao, key=f"edit_reacao_{idx}")
-                    new_contexto = st.text_area("Contexto", value=contexto, key=f"edit_contexto_{idx}")
-                    new_pide = st.text_area("Pensamento Interno", value=pide, key=f"edit_pide_{idx}")
-                    new_saida_texis = st.text_area("Texto Inicial de Saída",
-                                                   value=saida.get('Texto Inicial de Saída', ''),
-                                                   key=f"edit_texis_{idx}")
-                    new_saida_fala = st.text_area("Fala de Saída", value=saida.get('Fala de Saída', ''),
-                                                  key=f"edit_fs_{idx}")
-                    new_saida_texfs = st.text_area("Texto Final de Saída", value=saida.get('Texto Final de Saída', ''),
-                                                   key=f"edit_texfs_{idx}")
-                    new_reacao_s = st.text_area("Reação (Saída)", value=reacao_s, key=f"edit_reacao_s_{idx}")
-                    new_contexto_s = st.text_area("Contexto (Saída)", value=contexto_s, key=f"edit_contexto_s_{idx}")
+                    saida_tokens = bloco.get("Saída", {})
+                    texis_text = _extract_text_from_tokens(saida_tokens.get("Texto Inicial de Saída", []))
+                    fs_text = _extract_text_from_tokens(saida_tokens.get("Fala de Saída", []))
+                    texfs_text = _extract_text_from_tokens(saida_tokens.get("Texto Final de Saída", []))
+                    reacao_s_text = _extract_text_from_tokens(saida_tokens.get("Reação de Saída", []))
+                    contexto_s_text = _extract_text_from_tokens(saida_tokens.get("Contexto de Saída", []))
+
+                    # Inicializar session_state com valores atuais se não existirem
+                    if f"value_{bloco_id}_texe" not in st.session_state:
+                        st.session_state[f"value_{bloco_id}_texe"] = texe_text
+                    if f"value_{bloco_id}_fala" not in st.session_state:
+                        st.session_state[f"value_{bloco_id}_fala"] = faden_text
+                    if f"value_{bloco_id}_tefie" not in st.session_state:
+                        st.session_state[f"value_{bloco_id}_tefie"] = tefie_text
+                    if f"value_{bloco_id}_reacao" not in st.session_state:
+                        st.session_state[f"value_{bloco_id}_reacao"] = reacao_text
+                    if f"value_{bloco_id}_contexto" not in st.session_state:
+                        st.session_state[f"value_{bloco_id}_contexto"] = contexto_text
+                    if f"value_{bloco_id}_pide" not in st.session_state:
+                        st.session_state[f"value_{bloco_id}_pide"] = pide_text
+                    if f"value_{bloco_id}_texis" not in st.session_state:
+                        st.session_state[f"value_{bloco_id}_texis"] = texis_text
+                    if f"value_{bloco_id}_fala_s" not in st.session_state:
+                        st.session_state[f"value_{bloco_id}_fala_s"] = fs_text
+                    if f"value_{bloco_id}_texfs" not in st.session_state:
+                        st.session_state[f"value_{bloco_id}_texfs"] = texfs_text
+                    if f"value_{bloco_id}_reacao_s" not in st.session_state:
+                        st.session_state[f"value_{bloco_id}_reacao_s"] = reacao_s_text
+                    if f"value_{bloco_id}_contexto_s" not in st.session_state:
+                        st.session_state[f"value_{bloco_id}_contexto_s"] = contexto_s_text
+
+                    _display_narrative_edit(bloco_id, texe_text, faden_text, tefie_text, reacao_text, contexto_text,
+                                            pide_text, texis_text, fs_text, texfs_text, reacao_s_text, contexto_s_text,
+                                            edit_im)
 
                     # Botão para deletar bloco individual
                     col_del, col_spacer = st.columns([1, 3])
                     with col_del:
-                        confirm_del_bloco = st.checkbox(
-                            f"Confirmar exclusão do Bloco {bloco.get('bloco_id', idx + 1)}?",
-                            key=f"confirm_del_bloco_{idx}")
-                        if st.button(f"Deletar Bloco {bloco.get('bloco_id', idx + 1)}", type="secondary",
-                                     key=f"btn_del_bloco_{idx}"):
+                        confirm_del_bloco = st.checkbox(f"Confirmar exclusão do Bloco {bloco_id}?",
+                                                        key=f"confirm_del_bloco_{idx}")
+                        if st.button(f"Deletar Bloco {bloco_id}", type="secondary", key=f"btn_del_bloco_{idx}"):
                             if confirm_del_bloco:
                                 try:
-                                    bloco_id_to_del = bloco.get('bloco_id')
-                                    if bloco_id_to_del:
+                                    if bloco_id:
                                         _ida_data["IDA"]["IM"][edit_im]["blocos"] = [b for b in
                                                                                      _ida_data["IDA"]["IM"][edit_im][
-                                                                                         "blocos"] if b.get(
-                                                'bloco_id') != bloco_id_to_del]
+                                                                                         "blocos"] if
+                                                                                     b.get('bloco_id') != bloco_id]
                                         _um_data["UM"][edit_im]["blocos"] = [b for b in
                                                                              _um_data["UM"][edit_im]["blocos"] if
-                                                                             b.get('bloco_id') != bloco_id_to_del]
+                                                                             b.get('bloco_id') != bloco_id]
                                         os.makedirs(os.path.dirname(_OUT_IDA), exist_ok=True)
                                         with open(_OUT_IDA, "w", encoding="utf-8") as f:
                                             json.dump(_ida_data, f, ensure_ascii=False, indent=2)
                                         with open(_OUT_UM, "w", encoding="utf-8") as f:
                                             json.dump(_um_data, f, ensure_ascii=False, indent=2)
-                                        st.success(f"Bloco {bloco_id_to_del} deletado com sucesso.")
+                                        st.success(f"Bloco {bloco_id} deletado com sucesso.")
                                         _reload_data()
                                         st.rerun()
                                     else:
@@ -1019,51 +1444,52 @@ with st.expander("Passo 3 — Prévia IDA/UM (modelo README)", expanded=True):
                             else:
                                 st.warning("Marque a confirmação para deletar.")
 
-                    # Reconstruir secs editados
-                    edited_secs = {
-                        'entrada': f"{new_entrada_texe}—{new_entrada_fala}.{new_entrada_tefie}",
-                        're_e': new_reacao,
-                        'ce_e': new_contexto,
-                        'pide': new_pide,
-                        'saida': f"{new_saida_texis}—{new_saida_fala}.{new_saida_texfs}",
-                        're_s': new_reacao_s,
-                        'cs': new_contexto_s,
-                    }
+                    # Reconstruir secs editados usando session_state
+                    secs = _rebuild_secs_from_fields({}, '', '', '', {}, '', '',
+                                                     bloco_id)  # Passar vazios, função usa session_state
                     edited_blocks.append({
-                        'secs': edited_secs,
+                        'secs': secs,
                         'nome': im_meta.get('nome', ''),
-                        'bloco_id': bloco.get('bloco_id', idx + 1)
+                        'bloco_id': bloco_id
                     })
 
             if st.button("Aplicar Edições e Realinhar IDs", type="primary", key="btn_apply_edits"):
                 try:
                     new_previas = _rebuild_all_blocks_with_new_ids(edit_im, edited_blocks)
+                    # Mesclar com blocos existentes não editados
+                    existing_blocos = im_meta.get("blocos", [])
+                    edited_bloco_ids = {p['bloco_id'] for p in new_previas}
+                    merged_blocos = [b for b in existing_blocos if b.get('bloco_id') not in edited_bloco_ids] + [
+                        {
+                            "bloco_id": p['bloco_id'],
+                            **p['ida_block']
+                        } for p in new_previas
+                    ]
                     # Atualizar JSON consolidado
                     full_ida = {
                         "IDA": {
                             "IM": {
                                 str(edit_im): {
                                     "nome": im_meta.get('nome', ''),
-                                    "blocos": [
-                                        {
-                                            "bloco_id": p['bloco_id'],
-                                            **p['ida_block']
-                                        } for p in new_previas
-                                    ]
+                                    "blocos": merged_blocos
                                 }
                             }
                         }
                     }
+                    # Para UM também
+                    um_meta = (_um_data.get("UM", {}).get(edit_im) or {})
+                    existing_um_blocos = um_meta.get("blocos", [])
+                    merged_um_blocos = [b for b in existing_um_blocos if b.get('bloco_id') not in edited_bloco_ids] + [
+                        {
+                            "bloco_id": p['bloco_id'],
+                            **p['um_block']
+                        } for p in new_previas
+                    ]
                     full_um = {
                         "UM": {
                             str(edit_im): {
                                 "Universo Mãe": im_meta.get('nome', ''),
-                                "blocos": [
-                                    {
-                                        "bloco_id": p['bloco_id'],
-                                        **p['um_block']
-                                    } for p in new_previas
-                                ]
+                                "blocos": merged_um_blocos
                             }
                         }
                     }
@@ -1116,6 +1542,55 @@ with st.expander("Passo 4 — Salvar bloco (IDA e UM)", expanded=False):
         st.markdown(
             f"**Total:** {len(target_previas)} bloco(s) para IM={target_previas[0]['im'] if target_previas else ''}")
 
+        # Botões de download
+        if target_previas:
+            im_id = target_previas[0]['im']
+            full_ida = {
+                "IDA": {
+                    "IM": {
+                        str(im_id): {
+                            "nome": target_previas[0]['nome'],
+                            "blocos": [
+                                {
+                                    "bloco_id": p['bloco_id'],
+                                    **p['ida_block']
+                                } for p in target_previas
+                            ]
+                        }
+                    }
+                }
+            }
+            full_um = {
+                "UM": {
+                    str(im_id): {
+                        "Universo Mãe": target_previas[0]['nome'],
+                        "blocos": [
+                            {
+                                "bloco_id": p['bloco_id'],
+                                **p['um_block']
+                            } for p in target_previas
+                        ]
+                    }
+                }
+            }
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    label="Baixar IDA JSON",
+                    data=json.dumps(full_ida, ensure_ascii=False, indent=2),
+                    file_name="inconsciente.json",
+                    mime="application/json",
+                    key="download_ida_final"
+                )
+            with col2:
+                st.download_button(
+                    label="Baixar UM JSON",
+                    data=json.dumps(full_um, ensure_ascii=False, indent=2),
+                    file_name="memoria.json",
+                    mime="application/json",
+                    key="download_um_final"
+                )
+
         if st.button("Salvar todos os blocos no IM", type="primary", key="btn_salvar_blocos_final"):
             try:
                 for p in target_previas:
@@ -1150,3 +1625,16 @@ with st.expander("Passo 4 — Salvar bloco (IDA e UM)", expanded=False):
                 st.error(f"Falha ao salvar blocos: {e}")
     else:
         st.info("Gere prévias ou edite blocos no Passo 3 para habilitar o salvamento.")
+
+
+def _extract_pide_text(pide_list):
+    """Extrai texto de PIDE (lista de strings ou dicts)."""
+    if isinstance(pide_list, list):
+        texts = []
+        for item in pide_list:
+            if isinstance(item, dict):
+                texts.append(item.get('t', ''))
+            elif isinstance(item, str):
+                texts.append(item)
+        return '\n'.join(texts)
+    return ''
