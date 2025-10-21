@@ -135,6 +135,15 @@ class InsepaFieldDataset(Dataset):
                 if m > max_mom: max_mom = m
         self.mom_size = max_mom + 1
 
+        # coleta valores únicos para posições fixas
+        all_tokens = set()
+        for f in fv:
+            all_tokens |= set(fv[f].keys())
+        vals = {float(t) for t in all_tokens if t}
+        sorted_vals = sorted(vals)
+        self.val_to_idx = {v: i+1 for i, v in enumerate(sorted_vals)}  # índices de 1 em diante, 0 para padding
+        self.num_vals = len(sorted_vals)
+
         self.pares: List[Tuple[Dict, Dict]] = []
         for b in blocos:
             E_ids    = [self.v_E[t]    for t in b["entrada"]["tokens"].get("E", [])]
@@ -150,11 +159,15 @@ class InsepaFieldDataset(Dataset):
             def build_feats(lst, maxlen):
                 vals = [float(tok) for tok in lst]
                 moms = [int(tok.split(".",1)[0]) for tok in lst]
-                pos  = list(range(len(lst)))
+                if vals:
+                    min_v, max_v = min(vals), max(vals)
+                    pos = [(v - min_v) / (max_v - min_v) if max_v > min_v else 0.0 for v in vals]
+                else:
+                    pos = []
                 pad = maxlen - len(lst)
                 vals += [0.0]*pad
                 moms += [0]*pad
-                pos  += [0]*pad
+                pos  += [0.0]*pad
                 return vals, moms, pos
 
             E_vals, E_moms, E_pos     = build_feats(b["entrada"]["tokens"].get("E",[]),    self.max_E)
@@ -163,10 +176,17 @@ class InsepaFieldDataset(Dataset):
             PI_vals, PI_moms, PI_pos  = build_feats(b["entrada"]["tokens"].get("PIDE",[]), self.max_PIDE)
 
             for s in b.get("saidas", []):
+                # calcula pos_label = média dos valores dos tokens no bloco
+                all_vals = []
+                for field in ["E", "RE", "CE", "PIDE"]:
+                    all_vals.extend([float(t) for t in b["entrada"]["tokens"].get(field, [])])
+                pos_label = sum(all_vals) / len(all_vals) if all_vals else 0.0
+
                 y = {
                     "texto": self.l_txt[normalize(s["textos"][0])],
                     "emoji": self.l_emo.get(s.get("reacao",""), 0),
                     "ctx":   self.l_ctx.get(normalize(s.get("contexto","")), 0),
+                    "pos":   pos_label,
                 }
                 x = {
                     "E":      E_ids,    "E_val":  E_vals,  "E_mom":  E_moms,  "E_pos":  E_pos,
@@ -206,6 +226,7 @@ class InsepaFieldDataset(Dataset):
             "texto": torch.tensor(y["texto"], dtype=torch.long),
             "emoji": torch.tensor(y["emoji"], dtype=torch.long),
             "ctx":   torch.tensor(y["ctx"],   dtype=torch.long),
+            "pos":   torch.tensor(y["pos"],   dtype=torch.float32),
         }
         return x_t, y_t
 
@@ -216,7 +237,7 @@ class InsepaFieldDataset(Dataset):
 class AdamSegmentado(nn.Module):
     def __init__(self,
                  nE:int, nRE:int, nCE:int, nPIDE:int,
-                 mom_size:int, max_pos:int,
+                 mom_size:int, num_vals:int,
                  n_txt:int, n_emo:int, n_ctx:int):
         super().__init__()
         # Embeddings por campo
@@ -249,6 +270,7 @@ class AdamSegmentado(nn.Module):
         self.h_txt = nn.Linear(HIDDEN_DIM, n_txt)
         self.h_emo = nn.Linear(HIDDEN_DIM, n_emo)
         self.h_ctx = nn.Linear(HIDDEN_DIM, n_ctx)
+        self.h_pos = nn.Linear(HIDDEN_DIM, 1)  # Nova cabeça para posição (regressão)
 
     def forward(self, x: Dict[str,torch.Tensor]) -> Dict[str,torch.Tensor]:
         # Campo E
@@ -283,6 +305,7 @@ class AdamSegmentado(nn.Module):
             "texto": self.h_txt(h),
             "emoji": self.h_emo(h),
             "ctx":   self.h_ctx(h),
+            "pos":   self.h_pos(h),  # Posição como valor numérico
         }
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -307,12 +330,13 @@ def train(memoria: dict, dominio: str) -> None:
     model = AdamSegmentado(
         nE=len(ds.v_E), nRE=len(ds.v_RE),
         nCE=len(ds.v_CE), nPIDE=len(ds.v_PIDE),
-        mom_size=ds.mom_size, max_pos=ds.max_pos,
+        mom_size=ds.mom_size, num_vals=ds.num_vals,
         n_txt=len(ds.l_txt), n_emo=len(ds.l_emo),
         n_ctx=len(ds.l_ctx)
     )
     opt = optim.Adam(model.parameters(), lr=LR)
     ce  = nn.CrossEntropyLoss()
+    mse = nn.MSELoss()
 
     best, wait, prev_val = float("inf"), 0, None
     for ep in range(1, EPOCHS+1):
@@ -323,7 +347,8 @@ def train(memoria: dict, dominio: str) -> None:
             loss = (
                 ce(out["texto"], y["texto"]) +
                 ce(out["emoji"], y["emoji"]) +
-                ce(out["ctx"],   y["ctx"])
+                ce(out["ctx"],   y["ctx"]) +
+                mse(out["pos"],  y["pos"])
             )
             loss.backward()
             opt.step()
@@ -337,7 +362,8 @@ def train(memoria: dict, dominio: str) -> None:
                     val_loss += (
                         ce(out["texto"], y["texto"]).item() +
                         ce(out["emoji"], y["emoji"]).item() +
-                        ce(out["ctx"],   y["ctx"]).item()
+                        ce(out["ctx"],   y["ctx"]).item() +
+                        mse(out["pos"],  y["pos"]).item()
                     )
             val_loss /= len(val_ld)
         else:
@@ -348,7 +374,7 @@ def train(memoria: dict, dominio: str) -> None:
             torch.save((
                 model.state_dict(),
                 ds.max_E, ds.max_RE, ds.max_CE, ds.max_PIDE,
-                ds.mom_size, ds.max_pos,
+                ds.mom_size, ds.num_vals, ds.val_to_idx,
                 ds.v_E, ds.v_RE, ds.v_CE, ds.v_PIDE,
                 ds.l_txt, ds.l_emo, ds.l_ctx
             ), ckpt)
@@ -381,7 +407,7 @@ def infer(memoria: dict, dominio: str) -> None:
 
     (state,
      maxE, maxRE, maxCE, maxPIDE,
-     mom_size, max_pos,
+     mom_size, num_vals, val_to_idx,
      vE, vRE, vCE, vPIDE,
      l_txt, l_emo, l_ctx
     ) = torch.load(ckpt)
@@ -389,7 +415,7 @@ def infer(memoria: dict, dominio: str) -> None:
     model = AdamSegmentado(
         nE=len(vE), nRE=len(vRE),
         nCE=len(vCE), nPIDE=len(vPIDE),
-        mom_size=mom_size, max_pos=max_pos,
+        mom_size=mom_size, num_vals=num_vals,
         n_txt=len(l_txt), n_emo=len(l_emo),
         n_ctx=len(l_ctx)
     )
@@ -404,15 +430,19 @@ def infer(memoria: dict, dominio: str) -> None:
         ids  = [vocab[t] for t in toks]
         vals = [float(t) for t in toks]
         moms = [int(t.split('.',1)[0]) for t in toks]
-        pos  = list(range(len(toks)))
+        if vals:
+            min_v, max_v = min(vals), max(vals)
+            pos = [(v - min_v) / (max_v - min_v) if max_v > min_v else 0.0 for v in vals]
+        else:
+            pos = []
         pad  = max_len - len(toks)
         ids  += [0]*pad; vals += [0.0]*pad
-        moms += [0]*pad; pos  += [0]*pad
+        moms += [0]*pad; pos  += [0.0]*pad
         return (
             torch.tensor([ids],  dtype=torch.long),
             torch.tensor([vals], dtype=torch.float32),
             torch.tensor([moms], dtype=torch.long),
-            torch.tensor([pos],  dtype=torch.long),
+            torch.tensor([pos],  dtype=torch.float32),
         )
 
     raw = None
@@ -507,14 +537,14 @@ def test_model(memoria: dict, dominio: str) -> None:
 
     (state,
      maxE, maxRE, maxCE, maxPIDE,
-     mom_size, max_pos,
+     mom_size, num_vals, val_to_idx,
      vE, vRE, vCE, vPIDE,
      l_txt, l_emo, l_ctx
     ) = torch.load(ckpt)
 
     model = AdamSegmentado(
         nE=len(vE), nRE=len(vRE), nCE=len(vCE), nPIDE=len(vPIDE),
-        mom_size=mom_size, max_pos=max_pos,
+        mom_size=mom_size, num_vals=num_vals,
         n_txt=len(l_txt), n_emo=len(l_emo),
         n_ctx=len(l_ctx)
     )
@@ -524,21 +554,32 @@ def test_model(memoria: dict, dominio: str) -> None:
     blocos = memoria["IM"][dominio]["blocos"]
     print(f"📊 Teste em lote — Domínio {dominio} ({len(blocos)} blocos)")
 
+    # Inicializar acumuladores para métricas
+    total_samples = 0
+    acc_txt = 0.0
+    acc_emo = 0.0
+    acc_ctx = 0.0
+    mse_pos = 0.0
+
     for b in blocos:
         def featurize(field, max_len, vocab):
             toks = b["entrada"]["tokens"].get(field, [])
             ids  = [vocab[t] for t in toks]
             vals = [float(t) for t in toks]
             moms = [int(t.split(".",1)[0]) for t in toks]
-            pos  = list(range(len(toks)))
+            if vals:
+                min_v, max_v = min(vals), max(vals)
+                pos = [(v - min_v) / (max_v - min_v) if max_v > min_v else 0.0 for v in vals]
+            else:
+                pos = []
             pad  = max_len - len(toks)
             ids  += [0]*pad; vals += [0.0]*pad
-            moms += [0]*pad; pos  += [0]*pad
+            moms += [0]*pad; pos  += [0.0]*pad
             return (
                 torch.tensor([ids], dtype=torch.long),
                 torch.tensor([vals],dtype=torch.float32),
                 torch.tensor([moms],dtype=torch.long),
-                torch.tensor([pos], dtype=torch.long),
+                torch.tensor([pos], dtype=torch.float32),
             )
 
         E_ids,   E_val,   E_mom,   E_pos   = featurize("E",    maxE,   vE)
@@ -556,10 +597,59 @@ def test_model(memoria: dict, dominio: str) -> None:
         with torch.no_grad():
             out = model(x)
 
+        # Calcular métricas para este bloco
+        pred_txt = out["texto"].argmax(dim=1).item()
+        pred_emo = out["emoji"].argmax(dim=1).item()
+        pred_ctx = out["ctx"].argmax(dim=1).item()
+        pred_pos = out["pos"].item()
+
+        true_texts = [normalize(t) for t in b["saidas"][0]["textos"]]
+        pred_text = list(l_txt.keys())[pred_txt]
+        true_emo = b["saidas"][0].get("reacao", "")
+        true_ctx = b["saidas"][0].get("contexto", "")
+        # Para pos, usar a média dos valores dos tokens
+        all_vals = []
+        for field in ["E", "RE", "CE", "PIDE"]:
+            all_vals.extend([float(t) for t in b["entrada"]["tokens"].get(field, [])])
+        true_pos = sum(all_vals) / len(all_vals) if all_vals else 0.0
+
+        # Acurácias (comparar índices)
+        acc_txt_block = 1 if pred_text in true_texts else 0
+        acc_emo_block = 1 if true_emo in l_emo and pred_emo == list(l_emo.keys()).index(true_emo) else 0
+        acc_ctx_block = 1 if true_ctx in l_ctx and pred_ctx == list(l_ctx.keys()).index(normalize(true_ctx)) else 0
+        mse_pos_block = (pred_pos - true_pos) ** 2
+
+        acc_txt += acc_txt_block
+        acc_emo += acc_emo_block
+        acc_ctx += acc_ctx_block
+        mse_pos += mse_pos_block
+
+        total_samples += 1
+
         print(f"\n❏ Bloco_id={b['bloco_id']} Entrada: {b['entrada']['texto']} {b['entrada']['reacao']}")
-        print(f"   Texto logits:     {out['texto'].tolist()[0]}")
-        print(f"   Emoji logits:     {out['emoji'].tolist()[0]}")
-        print(f"   Contexto logits:  {out['ctx'].tolist()[0]}")
+        print(f"   Texto pred: {pred_text} | True: {true_texts}")
+        print(f"   Emoji pred: {list(l_emo.keys())[pred_emo] if pred_emo < len(l_emo) else 'N/A'} | True: {true_emo}")
+        print(f"   Contexto pred: {list(l_ctx.keys())[pred_ctx] if pred_ctx < len(l_ctx) else 'N/A'} | True: {true_ctx}")
+        print(f"   Posição pred: {pred_pos:.4f} | True: {true_pos:.4f}")
+        print(f"   Acurácia Texto: {acc_txt_block:.1f}")
+        print(f"   Acurácia Emoji: {acc_emo_block:.1f}")
+        print(f"   Acurácia Contexto: {acc_ctx_block:.1f}")
+        print(f"   MSE Posição: {mse_pos_block:.4f}")
+
+    # Calcular médias
+    if total_samples > 0:
+        acc_txt /= total_samples
+        acc_emo /= total_samples
+        acc_ctx /= total_samples
+        mse_pos /= total_samples
+
+        print("\n📈 Métricas Gerais:")
+        print(f"Acurácia Texto: {acc_txt:.2%}")
+        print(f"Acurácia Emoji: {acc_emo:.2%}")
+        print(f"Acurácia Contexto: {acc_ctx:.2%}")
+        print(f"MSE Posição: {mse_pos:.4f}")
+    else:
+        print("Nenhum bloco para testar.")
 
 # ────────────────────────────────────────────────────────────────────────────────
 # CLI PRINCIPAL
