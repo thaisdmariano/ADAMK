@@ -119,7 +119,34 @@ def normalize_separators(txt: str) -> str:
 def normalize(txt: str) -> str:
     for fn in (normalize_collapse_spaces, normalize_separators):
         txt = fn(txt)
-    return txt
+    return txt.lower()
+
+
+def variar_texto(texto: str, bloco: dict, dominio: str) -> str:
+    """Varia o texto substituindo tokens por suas variações aleatórias baseadas nas vars do inconsciente."""
+    tokens = Token(texto)
+    inconsciente = carregar_json(ARQUIVO_INCONSCIENTE, {"INCO": {}})
+    bloco_inco = next((b for b in inconsciente["INCO"][dominio]["Blocos"] if b["Bloco_id"] == str(bloco["bloco_id"])), None)
+    if not bloco_inco:
+        return texto
+    variado = []
+    for tok in tokens:
+        marcador = None
+        for m, data in bloco_inco["SAÍDA"].items():
+            if data["token"] == tok:
+                marcador = m
+                break
+        if marcador:
+            # Filtrar vars válidas (remover "0.0" que é placeholder)
+            valid_vars = [v for v in data["vars"] if v != "0.0"]
+            if valid_vars and len(valid_vars) > 0:
+                chosen_var = random.choice(valid_vars + [tok])
+            else:
+                chosen_var = tok
+        else:
+            chosen_var = tok
+        variado.append(chosen_var)
+    return ' '.join(variado)
 
 
 def get_variations_for_tokens(im_id: str, bloco_id: int, campo: str, markers: List[str]) -> List[str]:
@@ -311,7 +338,7 @@ class InsepaFieldDataset(Dataset):
             CE_vals, CE_moms, CE_pos = build_feats(CE_tokens, self.max_CE)
             PI_vals, PI_moms, PI_pos = build_feats(PIDE_tokens, self.max_PIDE)
 
-            for s in b.get("saidas", []):
+            for texto_idx, texto in enumerate(b["saidas"][0]["textos"]):
                 # calcula pos_label = média dos valores dos tokens no bloco
                 all_vals = []
                 for tokens in [E_tokens, RE_tokens, CE_tokens, PIDE_tokens]:
@@ -319,10 +346,9 @@ class InsepaFieldDataset(Dataset):
                 pos_label = sum(all_vals) / len(all_vals) if all_vals else 0.0
 
                 y = {
-                    "texto": b["saidas"][0]["textos"].index(s["textos"][0]),
-                    "emoji": 0 if b["saidas"][0].get("reacao", "") == s.get("reacao", "") else 1,  # simplificar
-                    "ctx": 0 if normalize(b["saidas"][0].get("contexto", "")) == normalize(
-                        s.get("contexto", "")) else 1,
+                    "texto": texto_idx,
+                    "emoji": 0,  # sempre 0, pois reacao é a mesma para todos os textos
+                    "ctx": 0,    # sempre 0, pois contexto é o mesmo para todos os textos
                     "pos": pos_label,
                 }
                 x = {
@@ -610,12 +636,21 @@ def infer(memoria: dict, dominio: str) -> None:
 
     # Coletar todas as reações possíveis, incluindo variações
     all_possible_reactions = set()
+    inconsciente = carregar_json(ARQUIVO_INCONSCIENTE, {"INCO": {}})
     for b in blocos:
         reac = b["entrada"].get("reacao", "")
         if reac:
             all_possible_reactions.add(reac)
-        vars_reac = get_variations_for_tokens(dominio, b["bloco_id"], "Entrada", b["entrada"]["tokens"].get("RE", []))
-        all_possible_reactions.update(vars_reac)
+        # Obter vars originais para RE
+        bloco_inco = next((bi for bi in inconsciente["INCO"][dominio]["Blocos"] if bi["Bloco_id"] == str(b["bloco_id"])), None)
+        if bloco_inco:
+            for marker in b["entrada"]["tokens"].get("RE", []):
+                if marker in bloco_inco["Entrada"]:
+                    data = bloco_inco["Entrada"][marker]
+                    all_possible_reactions.add(data["token"])
+                    for var in data.get("vars", []):
+                        if var != "0.0":
+                            all_possible_reactions.add(var)
 
     # Mostrar nome do IM
     nome_im = memoria["IM"][dominio].get("nome", f"IM_{dominio}")
@@ -632,6 +667,8 @@ def infer(memoria: dict, dominio: str) -> None:
         st.session_state.current_bloco = None
     if "last_audio" not in st.session_state:
         st.session_state.last_audio = None
+    if "conversa_blocos" not in st.session_state:
+        st.session_state.conversa_blocos = []
 
     # Exibir mensagens anteriores
     for message in st.session_state.messages:
@@ -685,6 +722,17 @@ def infer(memoria: dict, dominio: str) -> None:
             st.session_state.messages = []
             st.session_state.variation = 0
             st.session_state.current_bloco = None
+            st.session_state.conversa_blocos = []
+            return
+
+        if cmd == "reiniciar":
+            st.session_state.messages.append({"role": "assistant", "content": "🔄 Conversa reiniciada. Histórico limpo."})
+            with st.chat_message("assistant"):
+                st.markdown("🔄 Conversa reiniciada. Histórico limpo.")
+            st.session_state.messages = []
+            st.session_state.variation = 0
+            st.session_state.current_bloco = None
+            st.session_state.conversa_blocos = []
             return
 
         if cmd == "insight" and st.session_state.current_bloco:
@@ -707,25 +755,37 @@ def infer(memoria: dict, dominio: str) -> None:
         for b in blocos:
             txt_variations = get_variations_for_tokens(dominio, b["bloco_id"], "Entrada", b["entrada"]["tokens"]["E"])
             reac_variations = get_variations_for_tokens(dominio, b["bloco_id"], "Entrada", b["entrada"]["tokens"].get("RE", []))
-            # Para reac, se RE tem tokens, mas reac é o valor
-            # Simplificar: comparar txt com variações de E, reac com variações de RE se houver
-            # Mas reac é string, talvez comparar diretamente se reac in reac_variations, mas reac_variations são normalizados
-            # Para reac, usar normalize(reac) in reac_variations
-            # Mas reac_variations são variações dos tokens de RE
-            # Se RE = ["😊"], vars incluem outras reações
-            # Então, if normalize(txt) in txt_variations and normalize(reac) in reac_variations:
-            # Mas reac_variations são variações dos tokens de RE, que são as reações
-            # Sim.
-            if normalize(txt) in txt_variations and (not reac or normalize(reac) in reac_variations):
+            txt_tokens = Token(txt)
+            if all(normalize(t) in txt_variations for t in txt_tokens) and (not b["entrada"]["tokens"].get("RE") or (reac and normalize(reac) in reac_variations)):
                 bloco = b
                 break
         if bloco is None:
-            error_msg = "Desculpe mas seu texto e emoji não existem neste universo. Por favor verifique sua mensagem e tente novamente."
-            st.session_state.messages.append({"role": "assistant", "content": error_msg})
-            with st.chat_message("assistant"):
-                st.markdown(error_msg)
-            st.session_state.last_valid = False
-            st.rerun()
+            # Verificar se o texto matching mas a reação não
+            for b in blocos:
+                txt_variations = get_variations_for_tokens(dominio, b["bloco_id"], "Entrada", b["entrada"]["tokens"]["E"])
+                if all(normalize(t) in txt_variations for t in txt_tokens):
+                    # Texto matching, mas reação não
+                    st.session_state.messages.append({"role": "assistant", "content": "Hmm parece que falta emoção em sua expressão. Por favor verifique seu emoji."})
+                    with st.chat_message("assistant"):
+                        st.markdown("Hmm parece que falta emoção em sua expressão. Por favor verifique seu emoji.")
+                    st.rerun()
+            # Se não encontrou nem texto, tentar histórico ou erro
+            if st.session_state.conversa_blocos:
+                bloco = st.session_state.conversa_blocos[-1]
+                st.session_state.messages.append({"role": "assistant", "content": f"💭 Continuando do bloco {bloco['bloco_id']}..."})
+                with st.chat_message("assistant"):
+                    st.markdown(f"💭 Continuando do bloco {bloco['bloco_id']}...")
+            else:
+                error_msg = "Desculpe mas seu texto e emoji não existem neste universo. Por favor verifique sua mensagem e tente novamente."
+                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                with st.chat_message("assistant"):
+                    st.markdown(error_msg)
+                st.session_state.last_valid = False
+                st.rerun()
+
+        # Adicionar bloco ao histórico se for novo
+        if bloco and bloco not in st.session_state.conversa_blocos:
+            st.session_state.conversa_blocos.append(bloco)
 
         st.session_state.current_bloco = bloco
         st.session_state.variation = 0
@@ -750,9 +810,10 @@ def infer(memoria: dict, dominio: str) -> None:
 
         texts = bloco["saidas"][0]["textos"]
         emoji = bloco["saidas"][0].get("reacao", "")
-        # Resposta randômica baseada nas saídas do bloco (corpus próprio)
-        import random
-        chosen = random.choice(texts)
+        # Escolher texto baseado na predição do modelo
+        pred_txt = out["texto"].argmax(dim=1).item()
+        chosen = texts[pred_txt] if pred_txt < len(texts) else random.choice(texts)
+        chosen = variar_texto(chosen, bloco, dominio)
         response = f"{chosen} {emoji}"
         st.session_state.messages.append({"role": "assistant", "content": response})
         with st.chat_message("assistant"):
@@ -921,6 +982,7 @@ def infer(memoria: dict, dominio: str) -> None:
                 emoji = st.session_state.current_bloco["saidas"][0].get("reacao", "")
                 st.session_state.variation = (st.session_state.variation + 1) % len(texts)
                 chosen = texts[st.session_state.variation]
+                chosen = variar_texto(chosen, st.session_state.current_bloco, dominio)
                 response = f"{chosen} {emoji}"
                 st.session_state.messages.append({"role": "assistant", "content": response})
                 with st.chat_message("assistant"):
@@ -1063,6 +1125,7 @@ def infer(memoria: dict, dominio: str) -> None:
                 emoji = bloco["saidas"][0].get("reacao", "")
                 texts = bloco["saidas"][0]["textos"]
                 chosen = texts[st.session_state.variation]
+                chosen = variar_texto(chosen, bloco, dominio)
                 insight_msg = f"💡 De acordo com a expressão “{ep_txt}”, a reação “{ep_reac}” e o contexto “{contexto}”, conclui que “{chosen} {emoji}” é a resposta mais adequada."
                 st.session_state.messages.append({"role": "assistant", "content": insight_msg})
                 with st.chat_message("assistant"):
