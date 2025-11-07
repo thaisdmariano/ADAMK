@@ -777,6 +777,11 @@ def infer(memoria: dict, dominio: str) -> None:
         txt, reac = parse_text_reaction(prompt, all_possible_reactions)
         bloco = None
         for b in blocos:
+            # Verificar Multivars_Entrada primeiro (frases completas)
+            if txt in b["entrada"].get("Multivars_Entrada", []):
+                bloco = b
+                break
+            # Matching por tokens e vars
             txt_variations = get_variations_for_tokens(dominio, b["bloco_id"], "Entrada", b["entrada"]["tokens"]["E"])
             reac_variations = get_variations_for_tokens(dominio, b["bloco_id"], "Entrada", b["entrada"]["tokens"].get("RE", []))
             txt_tokens = Token(txt)
@@ -855,6 +860,10 @@ def infer(memoria: dict, dominio: str) -> None:
                             varied_txt = txt.replace(data["token"], var)
                             variations.append(varied_txt)
             all_variations.extend(variations)  # Adicionar variações deste texto
+        
+        # Adicionar Multivars_Saída
+        multivars_saida = bloco["saidas"][0].get("Multivars_Saída", [])
+        all_variations.extend(multivars_saida)
         
         # Escolher uma variação aleatoriamente com pesos
         bloco_id = str(bloco["bloco_id"])
@@ -1051,6 +1060,10 @@ def infer(memoria: dict, dominio: str) -> None:
                                     varied_txt = txt.replace(data["token"], var)
                                     variations.append(varied_txt)
                     all_variations.extend(variations)  # Adicionar variações deste texto
+                
+                # Adicionar Multivars_Saída
+                multivars_saida = st.session_state.current_bloco["saidas"][0].get("Multivars_Saída", [])
+                all_variations.extend(multivars_saida)
                 
                 # Escolher variação aleatoriamente com pesos
                 bloco_id = str(st.session_state.current_bloco["bloco_id"])
@@ -1721,6 +1734,30 @@ def submenu_im(memoria: dict) -> None:
                         "Contexto": st.column_config.TextColumn("Contexto", width=None)
                     })
                     
+                    # Multivars de Entrada
+                    st.subheader("🔄 Multivars de Entrada (Frases Completas)")
+                    multivars_entrada_data = [
+                        {
+                            "ID": b["bloco_id"],
+                            "Multivars_Entrada": "\n".join(b["entrada"].get("Multivars_Entrada", [])) or "Nenhum"
+                        } for b in blocos
+                    ]
+                    st.dataframe(multivars_entrada_data, use_container_width=True, column_config={
+                        "Multivars_Entrada": st.column_config.TextColumn("Multivars_Entrada", width=None)
+                    })
+                    
+                    # Multivars de Saída
+                    st.subheader("🔄 Multivars de Saída (Frases Completas)")
+                    multivars_saida_data = [
+                        {
+                            "ID": b["bloco_id"],
+                            "Multivars_Saída": "\n".join(b["saidas"][0].get("Multivars_Saída", [])) or "Nenhum"
+                        } for b in blocos
+                    ]
+                    st.dataframe(multivars_saida_data, use_container_width=True, column_config={
+                        "Multivars_Saída": st.column_config.TextColumn("Multivars_Saída", width=None)
+                    })
+                    
                     # Lista de vozes disponíveis
                     if TTS_AVAILABLE:
                         st.subheader("🎤 Vozes Disponíveis para TTS")
@@ -1846,6 +1883,8 @@ def submenu_im(memoria: dict) -> None:
                         saida_textos = st.text_area("Saída:", "\n".join(bloco["saidas"][0]["textos"]), height=150)
                         saida_reacao = st.text_input("Reação (Saída):", bloco["saidas"][0].get("reacao", ""))
                         saida_contexto = st.text_area("Contexto (Saída):", bloco["saidas"][0].get("contexto", ""), height=100)
+                        multivars_entrada = st.text_area("Multivars Entrada (uma por linha):", "\n".join(bloco["entrada"].get("Multivars_Entrada", [])), height=100)
+                        multivars_saida = st.text_area("Multivars Saída (uma por linha):", "\n".join(bloco["saidas"][0].get("Multivars_Saída", [])), height=100)
                         if st.form_submit_button("Salvar Edições"):
                             bloco["entrada"]["texto"] = entrada_texto
                             bloco["entrada"]["reacao"] = entrada_reacao
@@ -1854,6 +1893,9 @@ def submenu_im(memoria: dict) -> None:
                             bloco["saidas"][0]["textos"] = saida_textos.split("\n")
                             bloco["saidas"][0]["reacao"] = saida_reacao
                             bloco["saidas"][0]["contexto"] = saida_contexto
+                            bloco["entrada"]["Multivars_Entrada"] = [m.strip() for m in multivars_entrada.split("\n") if m.strip()]
+                            bloco["saidas"][0]["Multivars_Saída"] = [m.strip() for m in multivars_saida.split("\n") if m.strip()]
+                            salvar_json(ARQUIVO_MEMORIA, memoria)
                             recalcular_marcadores_im(memoria, im_id)
                             st.success("Bloco editado com sucesso!")
                 else:
@@ -2340,8 +2382,18 @@ def recalcular_marcadores_im(memoria: dict, im_id: str) -> None:
     universo["ultimo_child"] = current_last
     salvar_json(ARQUIVO_MEMORIA, memoria)
 
-    # Atualizar inconsciente - recriar baseado nos blocos
+    # Atualizar inconsciente - recriar baseado nos blocos, preservando vars existentes por token
     inconsciente = st.session_state.inconsciente
+    # Carregar vars existentes por token
+    existing_vars_by_token = {}
+    if im_id in inconsciente.get("INCO", {}):
+        for bloco_inco in inconsciente["INCO"][im_id].get("Blocos", []):
+            bloco_id = bloco_inco["Bloco_id"]
+            existing_vars_by_token[bloco_id] = {
+                "Entrada": {data["token"]: data["vars"] for data in bloco_inco["Entrada"].values()},
+                "SAÍDA": {data["token"]: data["vars"] for data in bloco_inco["SAÍDA"].values()}
+            }
+    
     if im_id not in inconsciente.get("INCO", {}):
         inconsciente.setdefault("INCO", {})[im_id] = {
             "NOME": universo["nome"],
@@ -2352,14 +2404,37 @@ def recalcular_marcadores_im(memoria: dict, im_id: str) -> None:
     im_data["Ultimo child"] = universo["ultimo_child"]
     im_data["Blocos"] = []
     for bloco in blocos:
-        entrada_tokens = bloco["entrada"]["tokens"]["TOTAL"]
-        saida_tokens = bloco["saidas"][0]["tokens"]["TOTAL"]
-        all_ent_tokens = [t for m, t in zip(entrada_tokens, bloco["entrada"]["tokens"]["E"] + bloco["entrada"]["tokens"]["RE"] + bloco["entrada"]["tokens"]["CE"] + bloco["entrada"]["tokens"]["PIDE"] + bloco["entrada"]["tokens"]["TOTAL"][len(bloco["entrada"]["tokens"]["E"]) + len(bloco["entrada"]["tokens"]["RE"]) + len(bloco["entrada"]["tokens"]["CE"]) + len(bloco["entrada"]["tokens"]["PIDE"]):])]
-        all_out_tokens = [t for m, t in zip(saida_tokens, bloco["saidas"][0]["tokens"]["S"] + bloco["saidas"][0]["tokens"]["RS"] + bloco["saidas"][0]["tokens"]["CS"])]
+        # Retokenizar para obter tokens atuais
+        E = Token(bloco["entrada"]["texto"])
+        RE = [bloco["entrada"]["reacao"]] if bloco["entrada"]["reacao"] else []
+        CE = Token(bloco["entrada"]["contexto"])
+        pensamento_limpo = bloco["entrada"]["pensamento_interno"].strip('"')
+        partes = pensamento_limpo.split('.')[:3]
+        PIDE_full = []
+        for parte in partes:
+            PIDE_full.extend(Token(parte.strip()))
+        
+        S = []
+        for t in bloco["saidas"][0]["textos"]:
+            S += Token(t)
+        RS = [bloco["saidas"][0]["reacao"]] if bloco["saidas"][0]["reacao"] else []
+        CS = Token(bloco["saidas"][0]["contexto"])
+        
+        entrada_tokens_list = E + RE + CE + PIDE_full
+        saida_tokens_list = S + RS + CS
+        
+        entrada_tokens = bloco["entrada"]["tokens"]["TOTAL"]  # marcadores
+        saida_tokens = bloco["saidas"][0]["tokens"]["TOTAL"]  # marcadores
+        
+        # Usar vars existentes por token
+        bloco_id = str(bloco["bloco_id"])
+        entrada_vars_by_token = existing_vars_by_token.get(bloco_id, {}).get("Entrada", {})
+        saida_vars_by_token = existing_vars_by_token.get(bloco_id, {}).get("SAÍDA", {})
+        
         bloco_data = {
-            "Bloco_id": str(bloco["bloco_id"]),
-            "Entrada": {m: {"token": t, "vars": ["0.0"]} for m, t in zip(entrada_tokens, all_ent_tokens)},
-            "SAÍDA": {m: {"token": t, "vars": ["0.0"]} for m, t in zip(saida_tokens, all_out_tokens)}
+            "Bloco_id": bloco_id,
+            "Entrada": {m: {"token": t, "vars": entrada_vars_by_token.get(t, ["0.0"])} for m, t in zip(entrada_tokens, entrada_tokens_list)},
+            "SAÍDA": {m: {"token": t, "vars": saida_vars_by_token.get(t, ["0.0"])} for m, t in zip(saida_tokens, saida_tokens_list)}
         }
         im_data["Blocos"].append(bloco_data)
     salvar_json(ARQUIVO_INCONSCIENTE, inconsciente)
