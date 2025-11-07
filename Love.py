@@ -91,16 +91,18 @@ def generate_markers(start: str, count: int) -> List[str]:
 
 ## INSEPA_UTILS
 def carregar_json(caminho: str, default: dict) -> dict:
-    if caminho == ARQUIVO_MEMORIA and "memoria" in st.session_state:
-        return st.session_state.memoria
-    elif caminho == ARQUIVO_INCONSCIENTE and "inconsciente" in st.session_state:
-        return st.session_state.inconsciente
     if not os.path.exists(caminho):
         with open(caminho, "w", encoding="utf-8") as f:
             json.dump(default, f, ensure_ascii=False, indent=2)
         return default
     with open(caminho, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    # Sempre atualizar session_state
+    if caminho == ARQUIVO_MEMORIA:
+        st.session_state.memoria = data
+    elif caminho == ARQUIVO_INCONSCIENTE:
+        st.session_state.inconsciente = data
+    return data
 
 
 def salvar_json(caminho: str, data: dict) -> None:
@@ -2030,10 +2032,12 @@ def submenu_im(memoria: dict) -> None:
             st.write(f"- {im_id}: {nome}")
         im_escolhido = st.selectbox("Digite o ID do IM:", ims, key="im_escolhido_vars")
         inconsciente = st.session_state.inconsciente
+        st.write(f"DEBUG: Inconsciente carregado. Chaves INCO: {list(inconsciente.get('INCO', {}).keys())}")
         if im_escolhido not in inconsciente.get("INCO", {}):
             st.error("❌ Nenhum bloco no inconsciente para este IM.")
             return
         im_data = inconsciente["INCO"][im_escolhido]
+        st.write(f"DEBUG: IM {im_escolhido} tem {len(im_data.get('Blocos', []))} blocos")
         blocos = im_data.get("Blocos", [])
         if not blocos:
             st.error("❌ Nenhum bloco no inconsciente para este IM.")
@@ -2042,11 +2046,19 @@ def submenu_im(memoria: dict) -> None:
         for bloco in blocos:
             with st.expander(f"Bloco {bloco['Bloco_id']}"):
                 st.subheader("Entrada")
+                st.write(f"DEBUG: Bloco tem {len(bloco['Entrada'])} entradas")
                 for marker, data in bloco["Entrada"].items():
-                    st.write(f"{marker}: {data['token']} | vars: {data['vars']}")
+                    vars_list = data.get('vars', [])
+                    st.write(f"{marker}: {data['token']} | vars: {vars_list}")
+                    if vars_list and any(v != "0.0" for v in vars_list):
+                        st.write(f"  ✅ Vars não vazias encontradas: {vars_list}")
                 st.subheader("SAÍDA")
+                st.write(f"DEBUG: Bloco tem {len(bloco['SAÍDA'])} saídas")
                 for marker, data in bloco["SAÍDA"].items():
-                    st.write(f"{marker}: {data['token']} | vars: {data['vars']}")
+                    vars_list = data.get('vars', [])
+                    st.write(f"{marker}: {data['token']} | vars: {vars_list}")
+                    if vars_list and any(v != "0.0" for v in vars_list):
+                        st.write(f"  ✅ Vars não vazias encontradas: {vars_list}")
         # Editar vars
         bloco_ids = [b["Bloco_id"] for b in blocos]
         bloco_edit = st.selectbox("Escolha o bloco para editar:", bloco_ids, key="bloco_edit")
@@ -2541,10 +2553,9 @@ def main():
     st.title("🤖 Adam Lovely AI - Sistema INSEPA")
     st.markdown("### Interface de Chat com IA Avançada")
     # Inicializar dados em session_state para persistência na nuvem
-    if "memoria" not in st.session_state:
-        st.session_state.memoria = carregar_json(ARQUIVO_MEMORIA, {"IM": {}})
-    if "inconsciente" not in st.session_state:
-        st.session_state.inconsciente = carregar_json(ARQUIVO_INCONSCIENTE, {"INCO": {}})
+    # Sempre recarregar dados do arquivo para garantir sincronização
+    st.session_state.memoria = carregar_json(ARQUIVO_MEMORIA, {"IM": {}})
+    st.session_state.inconsciente = carregar_json(ARQUIVO_INCONSCIENTE, {"INCO": {}})
     if "likes" not in st.session_state:
         st.session_state.likes = {}  # {bloco_id: {variacao: count}}
     memoria = st.session_state.memoria
