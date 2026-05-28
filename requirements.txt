@@ -2,7 +2,6 @@ streamlit
 numpy
 torch
 pymongo
-gridfs
 pyttsx3
 gtts
 edge-tts
