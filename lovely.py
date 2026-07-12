@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-.
 
 import os
@@ -10,6 +10,7 @@ import re as _re
 import hashlib
 import uuid
 import subprocess
+import copy
 from typing import List, Dict, Tuple, Any, Optional
 from itertools import product
 
@@ -1368,18 +1369,100 @@ def alnulu_encode(texto: str) -> List[float]:
     return [float(mapa.get(equiv.get(char.upper(), char.upper()), 0.0)) for char in texto]
 
 
+def load_inconsciente_lexicon(inconsciente: dict) -> dict:
+    """Carrega o léxico a partir do objeto `inconsciente` (JSON) e garante estrutura.
+    Retorna dicionário com chaves: 'universos', 'universo0', 'dominios', 'global'."""
+    lex = {"universos": {}, "universo0": {}, "dominios": {}, "global": {}}
+    if not inconsciente or not isinstance(inconsciente, dict):
+        return lex
+    # If the inconsciente already contains a lexicon structure, merge it
+    inc_lex = inconsciente.get("lexicon") or inconsciente.get("lexico") or {}
+    # universos específicos
+    for u_name, u_map in (inc_lex.get("universos") or {}).items():
+        lex["universos"][u_name.lower()] = {k.lower(): v for k, v in (u_map or {}).items()}
+    # universo0 (raiz)
+    for k, v in (inc_lex.get("universo0") or {}).items():
+        lex["universo0"][k.lower()] = v
+    # dominios
+    for d_name, d_map in (inc_lex.get("dominios") or {}).items():
+        lex["dominios"][d_name.lower()] = {k.lower(): v for k, v in (d_map or {}).items()}
+    # global
+    for k, v in (inc_lex.get("global") or {}).items():
+        lex["global"][k.lower()] = v
+    return lex
+
+
+def apply_domain_lexicon(text: str, universo: str = None, dominio: str = None) -> str:
+    """Aplica mapeamento léxico consultando apenas o léxico do `inconsciente`.
+    Prioridade:
+    1) léxico do universo específico (st.session_state.inconsciente_lexicon['universos'])
+    2) universo0 (raiz)
+    3) léxico por domínio
+    4) global
+    Retorna a forma semântica sem alterar os dados originais.
+    """
+    if not text:
+        return text
+    lexicon = None
+    try:
+        lexicon = st.session_state.get("inconsciente_lexicon")
+    except Exception:
+        lexicon = None
+    if not lexicon:
+        return text
+    universo_key = (universo or "").lower()
+    dominio_key = (dominio or universo or "").lower()
+
+    words = text.split()
+    out = []
+    for w in words:
+        key = w.lower().strip(".,;:!?()[]\"'")
+        replaced = None
+        # universo específico
+        u_map = lexicon.get("universos", {}).get(universo_key, {})
+        if key in u_map:
+            replaced = u_map[key]
+        # universo0
+        if replaced is None:
+            u0_map = lexicon.get("universo0", {})
+            if key in u0_map:
+                replaced = u0_map[key]
+        # domínio
+        if replaced is None:
+            d_map = lexicon.get("dominios", {}).get(dominio_key, {})
+            if key in d_map:
+                replaced = d_map[key]
+        # global
+        if replaced is None:
+            g_map = lexicon.get("global", {})
+            if key in g_map:
+                replaced = g_map[key]
+        out.append(replaced if replaced is not None else w)
+    return " ".join(out)
+
+
 def alnulu_similarity(vec1: List[float], vec2: List[float]) -> float:
-    """Calcula similaridade entre dois vetores ALNULU usando diferença absoluta média, penalizando diferença de comprimento."""
+    """Calcula similaridade entre dois vetores ALNULU usando similaridade por cosseno
+    com uma leve penalidade por diferença de comprimento. Retorna valor em [0,1]."""
+    import numpy as _np
     if not vec1 or not vec2:
         return 0.0
-    len1, len2 = len(vec1), len(vec2)
-    min_len = min(len1, len2)
-    max_len = max(len1, len2)
-    diff = sum(abs(vec1[i] - vec2[i]) for i in range(min_len))
-    # Penalizar diferença de comprimento
-    len_penalty = abs(len1 - len2) / max_len if max_len > 0 else 0.0
-    max_possible_diff = min_len * 26  # Máxima diferença possível (A-Z range)
-    sim = 1.0 - (diff / max_possible_diff) if max_possible_diff > 0 else 0.0
+    a = _np.array(vec1, dtype=_np.float32)
+    b = _np.array(vec2, dtype=_np.float32)
+    # pad para o mesmo comprimento com zeros
+    if a.size < b.size:
+        a = _np.pad(a, (0, b.size - a.size))
+    elif b.size < a.size:
+        b = _np.pad(b, (0, a.size - b.size))
+    norm_a = _np.linalg.norm(a)
+    norm_b = _np.linalg.norm(b)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    cos = float(_np.dot(a, b) / (norm_a * norm_b))
+    # normalizar para 0..1 (cos varia -1..1)
+    sim = max(0.0, (cos + 1.0) / 2.0)
+    # leve penalidade por diferença de comprimento relativa (até 0.1)
+    len_penalty = abs(len(vec1) - len(vec2)) / max(len(vec1), len(vec2)) * 0.1
     return max(0.0, sim - len_penalty)
 
 
@@ -1389,11 +1472,26 @@ def build_alnulu_cache(memoria: dict) -> dict:
     for dominio, universo in memoria.get("IM", {}).items():
         for bloco in universo.get("blocos", []):
             bloco_id = str(bloco.get("bloco_id", id(bloco)))
+            # aplicar léxico de domínio antes de codificar para reduzir ambiguidade
+            txt_proc = apply_domain_lexicon(bloco["entrada"]["texto"], dominio)
+            reac_proc = apply_domain_lexicon(bloco["entrada"].get("reacao", ""), dominio)
+            ctx_proc = apply_domain_lexicon(bloco["entrada"].get("contexto", ""), dominio)
+            thought_proc = apply_domain_lexicon(bloco["entrada"].get("pensamento_interno", ""), dominio)
             cache[bloco_id] = {
-                "txt": alnulu_encode(bloco["entrada"]["texto"]),
-                "reac": alnulu_encode(bloco["entrada"].get("reacao", "")),
-                "ctx": alnulu_encode(bloco["entrada"].get("contexto", "")),
-                "thought": alnulu_encode(bloco["entrada"].get("pensamento_interno", "")),
+                # manter texto original (preservando marcadores)
+                "txt_original": bloco["entrada"]["texto"],
+                "reac_original": bloco["entrada"].get("reacao", ""),
+                "ctx_original": bloco["entrada"].get("contexto", ""),
+                "thought_original": bloco["entrada"].get("pensamento_interno", ""),
+                # forma semântica (após léxico) e vetores semânticos
+                "txt_sem_text": txt_proc,
+                "reac_sem_text": reac_proc,
+                "ctx_sem_text": ctx_proc,
+                "thought_sem_text": thought_proc,
+                "txt": alnulu_encode(txt_proc),
+                "reac": alnulu_encode(reac_proc),
+                "ctx": alnulu_encode(ctx_proc),
+                "thought": alnulu_encode(thought_proc),
             }
     return cache
 
@@ -1405,11 +1503,15 @@ def retrieve_similar_blocks_alnulu(txt: str, reac: str, contexto: str, thought: 
         return []
     blocos = memoria["IM"][dominio]["blocos"]
     
-    # Encode input
-    txt_vec = alnulu_encode(txt)
-    reac_vec = alnulu_encode(reac)
-    ctx_vec = alnulu_encode(contexto)
-    thought_vec = alnulu_encode(thought)
+    # Pré-processar com léxico do domínio e gerar vetores
+    txt_proc = apply_domain_lexicon(txt, dominio)
+    reac_proc = apply_domain_lexicon(reac, dominio)
+    ctx_proc = apply_domain_lexicon(contexto, dominio)
+    thought_proc = apply_domain_lexicon(thought, dominio)
+    txt_vec = alnulu_encode(txt_proc)
+    reac_vec = alnulu_encode(reac_proc)
+    ctx_vec = alnulu_encode(ctx_proc)
+    thought_vec = alnulu_encode(thought_proc)
     
     similarities = []
     for bloco in blocos:
@@ -1422,19 +1524,24 @@ def retrieve_similar_blocks_alnulu(txt: str, reac: str, contexto: str, thought: 
             bloco_ctx_vec = bloco_cache["ctx"]
             bloco_thought_vec = bloco_cache["thought"]
         else:
-            bloco_txt_vec = alnulu_encode(bloco["entrada"]["texto"])
-            bloco_reac_vec = alnulu_encode(bloco["entrada"].get("reacao", ""))
-            bloco_ctx_vec = alnulu_encode(bloco["entrada"].get("contexto", ""))
-            bloco_thought_vec = alnulu_encode(bloco["entrada"].get("pensamento_interno", ""))
+            # aplicar léxico do domínio ao bloco antes de codificar
+            bloco_txt = apply_domain_lexicon(bloco["entrada"]["texto"], dominio)
+            bloco_reac = apply_domain_lexicon(bloco["entrada"].get("reacao", ""), dominio)
+            bloco_ctx = apply_domain_lexicon(bloco["entrada"].get("contexto", ""), dominio)
+            bloco_thought = apply_domain_lexicon(bloco["entrada"].get("pensamento_interno", ""), dominio)
+            bloco_txt_vec = alnulu_encode(bloco_txt)
+            bloco_reac_vec = alnulu_encode(bloco_reac)
+            bloco_ctx_vec = alnulu_encode(bloco_ctx)
+            bloco_thought_vec = alnulu_encode(bloco_thought)
         
         # Similaridade por campo (pesos ajustados para priorizar emoções: reação 0.5, contexto 0.3, texto 0.1, pensamento 0.1)
-        txt_sim = similaridade_palavras(txt, bloco["entrada"]["texto"])
+        txt_sim = semantic_text_similarity(txt, bloco["entrada"]["texto"], dominio)
         reac_sim = alnulu_similarity(reac_vec, bloco_reac_vec)
         ctx_sim = alnulu_similarity(ctx_vec, bloco_ctx_vec)
         thought_sim = alnulu_similarity(thought_vec, bloco_thought_vec)
         
-        # Similaridade por campo (pesos ajustados: texto 0.4, reação 0.3, contexto 0.2, pensamento 0.1)
-        overall_sim = 0.4 * txt_sim + 0.3 * reac_sim + 0.2 * ctx_sim + 0.1 * thought_sim
+        # Similaridade por campo (priorizar reação e contexto para manter identidade do universo)
+        overall_sim = 0.1 * txt_sim + 0.5 * reac_sim + 0.3 * ctx_sim + 0.1 * thought_sim
         
         # Bônus por concretude: se bloco tem contexto e pensamento, +0.1
         concretude_bonus = 0.1 if bloco["entrada"].get("contexto") and bloco["entrada"].get("pensamento_interno") else 0.0
@@ -1453,6 +1560,144 @@ def similaridade_palavras(txt1: str, txt2: str) -> float:
     return len(set1 & set2) / len(set1 | set2) if set1 or set2 else 0.0
 
 
+def semantic_text_similarity(txt1: str, txt2: str, dominio: str = "") -> float:
+    """Prioriza a semântica ALNULU do texto e usa fallback lexical só se necessário.
+    Isso preserva a lógica dos embeddings próprios do sistema e evita cair em regras binárias."""
+    if not txt1 and not txt2:
+        return 0.0
+    txt1_proc = apply_domain_lexicon(txt1, dominio)
+    txt2_proc = apply_domain_lexicon(txt2, dominio)
+    vec1 = alnulu_encode(txt1_proc)
+    vec2 = alnulu_encode(txt2_proc)
+    if vec1 and vec2:
+        return alnulu_similarity(vec1, vec2)
+    return similaridade_palavras(txt1_proc, txt2_proc)
+
+
+def _has_meaningful_value(value: Any) -> bool:
+    """Retorna True quando um campo contém conteúdo real e não um placeholder genérico."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        cleaned = normalize(value)
+        if not cleaned:
+            return False
+        generic_tokens = {
+            "nao definido",
+            "não definido",
+            "nao definida",
+            "não definida",
+            "sem contexto",
+            "sem pensamento",
+            "sem informacao",
+            "sem informação",
+            "n/a",
+            "none",
+            "null",
+            "dado sem exatidão ou similaridade.",
+        }
+        return cleaned not in generic_tokens
+    return True
+
+
+def build_semantic_signature(bloco: Optional[dict]) -> Dict[str, Any]:
+    """Constrói uma assinatura semântica do bloco usando texto, vars e multivars do INSEPA."""
+    if not isinstance(bloco, dict):
+        return {"text": "", "variants": [], "multivars": [], "tokens": []}
+
+    entrada = bloco.get("entrada", {}) or {}
+    saidas = bloco.get("saidas") or []
+    saida0 = saidas[0] if saidas else {}
+
+    variants = []
+    multivars = []
+
+    for field in ("texto", "reacao", "contexto", "pensamento_interno"):
+        value = entrada.get(field, "")
+        if isinstance(value, str):
+            variants.extend(_extract_variants_from_text(value))
+
+    for value in entrada.get("Multivars_Entrada", []) or []:
+        if isinstance(value, str):
+            multivars.append(normalize(value))
+
+    for value in saida0.get("Multivars_Saída", []) or []:
+        if isinstance(value, str):
+            multivars.append(normalize(value))
+
+    for value in saida0.get("textos", []) or []:
+        if isinstance(value, str):
+            variants.extend(_extract_variants_from_text(value))
+
+    return {
+        "text": normalize(entrada.get("texto", "")),
+        "variants": sorted({normalize(v) for v in variants if normalize(v)}),
+        "multivars": sorted({normalize(v) for v in multivars if normalize(v)}),
+        "tokens": [normalize(token) for token in Token(entrada.get("texto", "")) if normalize(token)],
+    }
+
+
+def _extract_variants_from_text(value: str) -> List[str]:
+    """Extrai palavras e variações de uma string com sintaxe [vars: ...]."""
+    if not isinstance(value, str):
+        return []
+
+    variants = []
+    for token in Token(value):
+        palavra, vars_list = parse_bloco_template_with_vars(token)
+        base = normalize(palavra)
+        if base:
+            variants.append(base)
+        for var in vars_list:
+            var_norm = normalize(var)
+            if var_norm:
+                variants.append(var_norm)
+    return variants
+
+
+def grounding_score(bloco: Optional[dict]) -> float:
+    """Calcula quanto um bloco está fundamentado por campos concretos de entrada/saída."""
+    if not isinstance(bloco, dict):
+        return 0.0
+
+    entrada = bloco.get("entrada", {}) or {}
+    score = 0.0
+    if _has_meaningful_value(entrada.get("texto")):
+        score += 0.25
+    if _has_meaningful_value(entrada.get("reacao")):
+        score += 0.20
+    if _has_meaningful_value(entrada.get("contexto")):
+        score += 0.25
+    if _has_meaningful_value(entrada.get("pensamento_interno")):
+        score += 0.30
+
+    saidas = bloco.get("saidas") or []
+    if saidas:
+        saida0 = saidas[0] or {}
+        if _has_meaningful_value(saida0.get("reacao")):
+            score += 0.05
+        if saida0.get("textos"):
+            score += 0.05
+        if _has_meaningful_value(saida0.get("contexto")):
+            score += 0.05
+
+    return min(1.0, score)
+
+
+def is_concrete_block(bloco: Optional[dict], threshold: float = 0.55) -> bool:
+    """Classifica blocos como concretos quando há fundamentação real em contexto/pensamento."""
+    if not isinstance(bloco, dict):
+        return False
+
+    entrada = bloco.get("entrada", {}) or {}
+    has_context = _has_meaningful_value(entrada.get("contexto"))
+    has_thought = _has_meaningful_value(entrada.get("pensamento_interno"))
+    if not has_context and not has_thought:
+        return False
+
+    return grounding_score(bloco) >= threshold
+
+
 def parse_quoted_response(prompt: str) -> str:
     """Parseia resposta, extraindo apenas o conteúdo entre aspas duplas se presente, senão retorna o prompt limpo."""
     match = _re.search(r'"([^"]*)"', prompt)
@@ -1460,6 +1705,74 @@ def parse_quoted_response(prompt: str) -> str:
         return match.group(1).strip()
     else:
         return prompt.strip()
+
+
+def select_structured_autonomous_candidate(entrada_texto: str, entrada_reacao: str, entrada_contexto: str, entrada_pensamento: str, dominio: str, memoria: dict) -> Optional[dict]:
+    """Seleciona um bloco base para geração autônoma apenas quando o bloco está bem alinhado com a estrutura INSEPA."""
+    if not memoria or not isinstance(memoria, dict):
+        return None
+    universo = memoria.get("IM", {}).get(dominio, {})
+    blocos = universo.get("blocos") or []
+    if not blocos:
+        return None
+
+    candidates = []
+    for bloco in blocos:
+        if not isinstance(bloco, dict):
+            continue
+        entrada = bloco.get("entrada", {}) or {}
+        if not entrada.get("texto"):
+            continue
+
+        text_match = semantic_text_similarity(entrada_texto, entrada.get("texto", ""), dominio)
+        reaction_match = 1.0 if normalize(entrada_reacao or "") and normalize(entrada.get("reacao", "") or "") and normalize(entrada_reacao) == normalize(entrada.get("reacao", "")) else 0.0
+        context_match = 1.0 if normalize(entrada_contexto) and normalize(entrada.get("contexto", "") or "") and normalize(entrada_contexto) == normalize(entrada.get("contexto", "")) else 0.0
+        thought_match = 1.0 if normalize(entrada_pensamento) and normalize(entrada.get("pensamento_interno", "") or "") and normalize(entrada_pensamento) == normalize(entrada.get("pensamento_interno", "")) else 0.0
+        signature = build_semantic_signature(bloco)
+        variant_overlap = len(set(signature["variants"]) & set(_extract_variants_from_text(entrada_texto))) / max(1, len(set(signature["variants"]) | set(_extract_variants_from_text(entrada_texto))))
+        multivar_overlap = len(set(signature["multivars"]) & set([normalize(v) for v in (entrada.get("Multivars_Entrada", []) or [])])) / max(1, len(set(signature["multivars"]) | set([normalize(v) for v in (entrada.get("Multivars_Entrada", []) or [])])))
+        grounding = grounding_score(bloco)
+        concrete = is_concrete_block(bloco)
+
+        if not concrete:
+            continue
+
+        if text_match < 0.25 and reaction_match < 0.5 and context_match < 0.5 and thought_match < 0.5 and variant_overlap < 0.2 and multivar_overlap < 0.2:
+            continue
+
+        score = (
+            0.35 * text_match
+            + 0.20 * reaction_match
+            + 0.15 * context_match
+            + 0.10 * thought_match
+            + 0.10 * variant_overlap
+            + 0.10 * multivar_overlap
+            + 0.10 * grounding
+        )
+        candidates.append((score, bloco))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    best_score, best_block = candidates[0]
+    _, best_block = candidates[0]
+    best_variant_signal = 0.0
+    best_multivar_signal = 0.0
+    for score, block in candidates:
+        signature = build_semantic_signature(block)
+        input_variants = set(_extract_variants_from_text(entrada_texto))
+        block_variants = set(signature["variants"])
+        block_multivars = set(signature["multivars"])
+        variant_overlap = len(block_variants & input_variants) / max(1, len(block_variants | input_variants))
+        multivar_overlap = len(block_multivars & set([normalize(v) for v in (block.get("entrada", {}).get("Multivars_Entrada", []) or [])])) / max(1, len(block_multivars | set([normalize(v) for v in (block.get("entrada", {}).get("Multivars_Entrada", []) or [])])))
+        best_variant_signal = max(best_variant_signal, variant_overlap)
+        best_multivar_signal = max(best_multivar_signal, multivar_overlap)
+
+    strong_semantic_signal = best_variant_signal >= 0.25 or best_multivar_signal >= 0.25
+    if best_score < 0.25 and not strong_semantic_signal:
+        return None
+    return best_block
 
 
 def parse_text_reaction(prompt: str) -> tuple[str, str]:
@@ -1758,6 +2071,23 @@ def infer(memoria: dict, dominio: str) -> None:
             st.session_state.conversa_blocos = []
             return
 
+        if should_run_harness_admin_automation():
+            harness_result = run_harness_admin_step(dominio, prompt)
+            st.session_state["last_harness_result"] = harness_result or {}
+            if st.session_state.get("admin", False):
+                if harness_result and harness_result.get("action") == "learned":
+                    st.info(f"🛠️ Harness: aprendi um bloco novo para '{harness_result.get('learned_block_id')}'.")
+                elif harness_result and harness_result.get("action") == "blocked":
+                    st.warning("🛡️ Harness: bloco abstrato bloqueado; autorização do adm é necessária para aprender.")
+                elif harness_result and harness_result.get("action") == "error":
+                    st.error(f"⚠️ Harness falhou: {harness_result.get('error')}")
+
+        if should_run_autonomous_mode():
+            auto_result = try_autonomous_learning_from_prompt(txt, reac, "", "", dominio)
+            if auto_result:
+                st.session_state["last_autonomous_result"] = auto_result
+                st.info("🤖 Modo autônomo: o Adam está aprendendo com esta interação e transformando-a em novo bloco.")
+
         if cmd == "reiniciar":
             st.session_state.messages.append({"role": "assistant", "content": "🔄 Conversa reiniciada. Histórico limpo."})
             with st.chat_message("assistant"):
@@ -1846,8 +2176,8 @@ def infer(memoria: dict, dominio: str) -> None:
                 similares = retrieve_similar_blocks_alnulu(parte_clean, parte_reac, "", "", dominio, top_k=1)
                 if similares:
                     sim_score, bloco_sim = similares[0]
-                    if sim_score < 0.5:
-                        # Alucinação detectada: resposta genérica/fraca
+                    if sim_score < 0.5 and not is_concrete_block(bloco_sim):
+                        # Blocos sem fundamentação não devem gerar resposta confiante.
                         resposta = "Estou alucinando... Vamos aprender juntos?"
                     else:
                         resposta_texto = bloco_sim['saidas'][0]['textos'][0]
@@ -1876,8 +2206,8 @@ def infer(memoria: dict, dominio: str) -> None:
             similares = retrieve_similar_blocks_alnulu(txt, reac, "", "", dominio, top_k=1)
             if similares:
                 sim_score, bloco_sim = similares[0]
-                if sim_score < 0.5:
-                    # Alucinação detectada: resposta genérica/fraca
+                if sim_score < 0.5 and not is_concrete_block(bloco_sim):
+                    # Blocos sem fundamentação não devem gerar resposta confiante.
                     response = "Estou alucinando... Vamos aprender juntos?"
                     bloco = None  # Para ativar Cerbero
                 else:
@@ -2885,18 +3215,95 @@ Contexto: Resposta customizada com multivars
             if response not in st.session_state.likes[bloco_id]:
                 st.session_state.likes[bloco_id][response] = 0
             st.session_state.likes[bloco_id][response] += 1
+            reinforcement = record_human_reinforcement(bloco_id, response, liked=True)
             st.success(f"👍 Curtido! Agora '{response}' tem mais chances de aparecer.")
             
             # Fine-tuning imediato com o like
-            bloco_id = st.session_state.last_bloco_id
-            response = st.session_state.last_response
-            # Criar dado de treinamento com o bloco curtido
-            memoria_temp = {"IM": {dominio: memoria["IM"][dominio]}}  # Subconjunto
-            # Para fine-tuning, usar o bloco específico
-            # Como é online, treinar com o bloco do like por algumas épocas
             fine_tune_online(memoria, dominio, bloco_id, response)
-            st.success("✅ Modelo ajustado com o feedback! Aprendizado autônomo em ação.")
+            st.success(f"✅ Modelo ajustado com o feedback! Confiança do bloco: {reinforcement['reinforcement']['confidence_score']:.2f}.")
             st.rerun()
+
+
+def record_human_reinforcement(bloco_id: str, response: str, liked: bool = True, human_name: str = "") -> dict:
+    """Registra reforço humano para um bloco e atualiza sua confiança percebida.
+
+    A regra de peso é:
+    - 66% para o que o Adam aprende com a criadora Thaís D' Mariano, especialmente dados fundamentados com E+RE+CE+PIDE;
+    - 12% para opiniões de usuários, quando os dados forem abstratos sem fundamento em E+RE;
+    - 23% para a autonomia do Adam decidir sozinho, mas somente após aprender com a criadora.
+    """
+    if not bloco_id:
+        return {"block_id": None, "reinforcement": {"human_likes": 0, "human_dislikes": 0, "confidence_score": 0.0}, "status": "rejected"}
+
+    creator_names = {
+        "thais d' mariano",
+        "thais d mariano",
+        "thais mariano",
+        "thaís d' mariano",
+        "thaís d mariano",
+        "thaís mariano",
+    }
+    normalized_name = (human_name or "").strip().lower()
+    is_creator = (
+        not normalized_name
+        or normalized_name in creator_names
+        or normalized_name.startswith("thais")
+        or normalized_name.startswith("thaís")
+    )
+
+    if "reinforcements" not in st.session_state:
+        st.session_state.reinforcements = {}
+
+    reinforcement = st.session_state.reinforcements.setdefault(
+        bloco_id,
+        {
+            "human_likes": 0,
+            "human_dislikes": 0,
+            "responses": {},
+            "confidence_score": 0.5,
+            "creator": "Thaís D' Mariano",
+            "weights": {"creator": 0.66, "other_humans": 0.12, "autonomy": 0.23},
+            "source": "creator" if is_creator else "other_human",
+        },
+    )
+
+    if liked:
+        reinforcement["human_likes"] += 1
+    else:
+        reinforcement["human_dislikes"] += 1
+
+    if response:
+        reinforcement["responses"][response] = reinforcement["responses"].get(response, 0) + 1
+
+    if is_creator:
+        reinforcement["confidence_score"] = min(1.0, 0.66 + 0.12 * reinforcement["human_likes"] + 0.03)
+        reinforcement["source"] = "creator"
+        status = "accepted"
+    else:
+        reinforcement["confidence_score"] = min(1.0, 0.12 + 0.02 * reinforcement["human_likes"])
+        reinforcement["source"] = "other_human"
+        status = "accepted"
+
+    reinforcement["autonomy_weight"] = 0.23
+    reinforcement["autonomy_ready"] = bool(reinforcement["human_likes"] > 0 and is_creator)
+
+    memoria = st.session_state.get("memoria", {})
+    for dominio, universo in memoria.get("IM", {}).items():
+        for bloco in universo.get("blocos", []):
+            if str(bloco.get("bloco_id")) == str(bloco_id):
+                bloco["reinforcement"] = reinforcement
+                break
+        else:
+            continue
+        break
+
+    st.session_state.memoria = memoria
+    auto_save_state()
+    return {
+        "block_id": bloco_id,
+        "reinforcement": copy.deepcopy(reinforcement),
+        "status": status,
+    }
 
 
 def weighted_choice(variations, bloco_id):
@@ -2941,6 +3348,69 @@ def get_unconscious_vars_for_block(bloco: dict, dominio: str) -> dict:
         if vars_list and vars_list != ["0.0"]:
             vars_dict[token] = vars_list
     return vars_dict
+
+
+def should_run_harness_admin_automation() -> bool:
+    """Retorna True quando o admin habilitou o assistente automático do harness no chat."""
+    return bool(st.session_state.get("admin", False) and st.session_state.get("harness_auto_admin", True))
+
+
+def should_run_autonomous_mode() -> bool:
+    """Retorna True quando o modo autônomo do Adam está habilitado para o admin."""
+    if st.session_state.get("autonomous_mode", True) is False:
+        return False
+    return bool(st.session_state.get("admin", False) or st.session_state.get("autonomous_mode", True))
+
+
+def try_autonomous_learning_from_prompt(entrada_texto: str, entrada_reacao: str, entrada_contexto: str, entrada_pensamento: str, dominio: str) -> Optional[dict]:
+    """Tenta criar um bloco novo e aprender autonomamente a partir do prompt do usuário."""
+    if not should_run_autonomous_mode():
+        return None
+    if not st.session_state.get("auto_learn", True):
+        return None
+    if not entrada_texto and not entrada_reacao:
+        return None
+
+    memoria = st.session_state.get("memoria", {})
+    if not isinstance(memoria, dict):
+        return None
+
+    bloco, resposta, reacao_saida, contexto_saida = auto_learn_and_add_block(
+        entrada_texto,
+        entrada_reacao,
+        entrada_contexto or "Aprendido em modo autônomo",
+        entrada_pensamento or "Aprendizado autônomo do Adam",
+        dominio,
+        default_pensamento=st.session_state.get("default_pensamento", "Aprendizado autônomo do Adam"),
+    )
+    return {
+        "action": "learned",
+        "bloco": bloco,
+        "response": resposta,
+        "reaction": reacao_saida,
+        "context": contexto_saida,
+    }
+
+
+def run_harness_admin_step(dominio: str, raw_input: str) -> Optional[dict]:
+    """Executa o harness como assistente automático no fluxo do chat do Streamlit."""
+    if not should_run_harness_admin_automation():
+        return None
+
+    try:
+        import adam_harness as harness_module
+        lovely_module = harness_module.load_lovely_module()
+        harness_module.ensure_runtime_state(lovely_module)
+        return harness_module.run_learning_cycle(
+            lovely_module,
+            dominio,
+            raw_input,
+            learn_on_failure=True,
+            allow_abstract_learning=st.session_state.get("admin_override_learning", False),
+        )
+    except Exception as exc:
+        st.session_state["harness_last_error"] = str(exc)
+        return {"action": "error", "error": str(exc)}
 
 
 def generate_cartesian_responses(texts: list, unconscious_vars_dict: dict) -> list:
@@ -4360,21 +4830,23 @@ def submenu_testar_adam(memoria: dict, inconsciente: dict) -> None:
     st.subheader("1. Match Exato")
     txt_exato = st.text_input("Digite input exato (ex: Olá Sr. Vampiro ^^):", key="txt_exato")
     if txt_exato:
-        parts = txt_exato.rsplit(" ", 1)
-        if len(parts) == 2:
-            txt, reac = parts
-        else:
-            txt, reac = txt_exato, ""
+        txt_exato_norm = normalize(txt_exato)
         blocos = memoria["IM"][dominio]["blocos"]
         bloco_exato = None
         for b in blocos:
-            if b["entrada"]["texto"] == txt and b["entrada"].get("reacao") == reac:
+            bloco_texto = b["entrada"]["texto"]
+            bloco_reac = b["entrada"].get("reacao", "") or ""
+            if normalize(f"{bloco_texto} {bloco_reac}".strip()) == txt_exato_norm:
+                bloco_exato = b
+                break
+            if normalize(bloco_texto) == txt_exato_norm and not bloco_reac:
                 bloco_exato = b
                 break
         if bloco_exato:
-            st.success(f"✅ Match exato: '{txt} {reac}' → '{bloco_exato['saidas'][0]['textos'][0]}'")
+            resposta = bloco_exato['saidas'][0]['textos'][0] if bloco_exato['saidas'] else "(sem saída definida)"
+            st.success(f"✅ Match exato: '{txt_exato}' → '{resposta}'")
         else:
-            st.warning(f"❌ Nenhum match exato para '{txt} {reac}'")
+            st.warning(f"❌ Nenhum match exato para '{txt_exato}'")
     
     # Teste 2: Similaridade ALNULU
     st.subheader("2. Similaridade ALNULU")
@@ -4436,21 +4908,24 @@ def submenu_testar_adam(memoria: dict, inconsciente: dict) -> None:
             similares = retrieve_similar_blocks_alnulu(parte_clean, reac_parte, ctx_sim, "", dominio, top_k=1)
             if similares:
                 sim_score, bloco_sim = similares[0]
-                st.info(f"🔍 Melhor match (score: {sim_score:.2f}): '{bloco_sim['entrada']['texto']} {bloco_sim['entrada'].get('reacao', '')}'")
+                grounding = grounding_score(bloco_sim)
+                concrete = is_concrete_block(bloco_sim)
+                st.info(f"🔍 Melhor match (score: {sim_score:.2f}, grounding: {grounding:.2f}): '{bloco_sim['entrada']['texto']} {bloco_sim['entrada'].get('reacao', '')}'")
                 # Reflexão para esta parte
                 has_reac = bool(reac_parte.strip())
                 has_ctx = bool(ctx_sim.strip())
-                if has_reac and has_ctx:
+                if concrete:
+                    reflexao = "Isso é um conhecimento concreto: tem texto, reação, contexto e/ou pensamento internamente fundamentados."
+                elif has_reac and has_ctx:
                     reflexao = "Isso é um conhecimento concreto: tem texto, reação, contexto e significado."
                 else:
-                    reflexao = "Isso é uma opinião: só tem texto (e talvez reação), baseado em similaridade."
+                    reflexao = "Isso é uma opinião ou bloco abstrato: só tem texto (e talvez reação), baseado em similaridade."
                 st.write(f"Reflexão: {reflexao}")
                 # Resposta sugerida para esta parte
                 resposta_texto = bloco_sim['saidas'][0]['textos'][0]
                 resposta_reacao = bloco_sim['saidas'][0].get('reacao', '')
-                # Detectar alucinação no teste: se score < 0.8, indica similaridade fraca/genérica
-                if sim_score < 0.5:
-                    st.error(f"🚨 Alucinação detectada! Score baixo ({sim_score:.2f}) indica resposta genérica/fraca. Ativando aprendizado...")
+                if sim_score < 0.5 and not concrete:
+                    st.error(f"🚨 Alucinação detectada! Score baixo ({sim_score:.2f}) e bloco pouco fundamentado. Ativando aprendizado...")
                     resposta = "Estou alucinando... Vamos aprender juntos?"
                 else:
                     texto_exato = normalize(parte_clean) == normalize(bloco_sim['entrada']['texto'])
@@ -4595,10 +5070,34 @@ Reação: 📭
 Contexto: Base vazia
 """
 
+    # Selecionar um bloco base apenas se ele estiver bem alinhado com a estrutura INSEPA.
+    bloco_base = select_structured_autonomous_candidate(entrada_texto, entrada_reacao, entrada_contexto, entrada_pensamento, dominio, memoria)
+    if bloco_base is None:
+        return f"""Índice mãe: {dominio}
+
+Entrada: {entrada_texto}
+
+Reação: {entrada_reacao}
+
+Contexto: {entrada_contexto}
+
+Pensamento Interno: {entrada_pensamento}
+
+Saída:
+
+1. Bloco base não encontrado ou insuficientemente fundamentado para autonomia segura.
+
+Reação: 🧠
+
+Contexto: Falha de alinhamento INSEPA
+"""
+
     # Preparar “contexto” para geração autônoma usando blocos existentes
     similares = retrieve_similar_blocks_alnulu(entrada_texto, entrada_reacao, entrada_contexto, entrada_pensamento, dominio, top_k=3)
     exemplos = []
     for score, b in similares:
+        if not is_concrete_block(b):
+            continue
         resp = b["saidas"][0]["textos"][0] if b["saidas"] and b["saidas"][0].get("textos") else ""
         pens = b["entrada"].get("pensamento_interno", "")
         exemplos.append(f"{b['entrada']['texto']} => {resp} (pensamento: {pens})")
@@ -4608,17 +5107,24 @@ Contexto: Base vazia
         guia = " | ".join(exemplos[:3])
         entrada_pensamento = f"{entrada_pensamento} | Baseado nos exemplos: {guia}" if entrada_pensamento else f"Baseado nos exemplos: {guia}"
 
-    # Usar o último bloco como base para geração autônoma
-    bloco_base = blocos[-1]
-
-    # Calcular start_value baseado no fim das saídas do último bloco
+    # Calcular start_value baseado no fim das saídas do bloco base
     fim_saida_ultimo = float(bloco_base["saidas"][0]["fim"])
     start_value = fim_saida_ultimo + 0.01
 
-    # Featurizar entrada autônoma
-    E = Token(entrada_texto)
+    # Featurizar entrada autônoma como um bloco INSEPA completo: texto + reação + contexto + pensamento interno.
+    texto_base = normalize(entrada_texto) or ""
+    reacao_base = normalize(entrada_reacao) or ""
+    contexto_base = normalize(entrada_contexto) or ""
+    pensamento_base = normalize(entrada_pensamento) or ""
+
+    texto_tokens = Token(texto_base)
+    reacao_tokens = Token(reacao_base)
+    contexto_tokens = Token(contexto_base)
+    pensamento_tokens = Token(pensamento_base)
+
+    E = texto_tokens + reacao_tokens
     RE = [entrada_reacao] if entrada_reacao else []
-    CE = Token(entrada_contexto)
+    CE = contexto_tokens + pensamento_tokens
     pensamento_limpo = entrada_pensamento.strip('"')
     partes = pensamento_limpo.split('.')[:3]
     PIDE_full = []
@@ -4728,10 +5234,17 @@ def parse_autonomous_block_template(template: str) -> dict:
         m = _re.search(rf"{_re.escape(name)}:\s*(.*)", text)
         return m.group(1).strip() if m else ""
 
+    def get_multivars(name: str, text: str) -> list[str]:
+        raw = get_field(name, text)
+        if not raw:
+            return []
+        return [item.strip() for item in _re.split(r"\s*\|\s*", raw) if item.strip()]
+
     entrada_texto = get_field("Entrada", header)
     entrada_reacao = get_field("Reação", header)
     entrada_contexto = get_field("Contexto", header)
     entrada_pensamento = get_field("Pensamento Interno", header)
+    entrada_multivars = get_multivars("Multivars_Entrada", header)
 
     saida_texto = ""
     for line in body.splitlines():
@@ -4742,15 +5255,18 @@ def parse_autonomous_block_template(template: str) -> dict:
 
     saida_reacao = get_field("Reação", body)
     saida_contexto = get_field("Contexto", body)
+    saida_multivars = get_multivars("Multivars_Saída", body)
 
     return {
         "entrada_texto": entrada_texto,
         "entrada_reacao": entrada_reacao,
         "entrada_contexto": entrada_contexto,
         "entrada_pensamento": entrada_pensamento,
+        "entrada_multivars": entrada_multivars,
         "saida_texto": saida_texto,
         "saida_reacao": saida_reacao,
         "saida_contexto": saida_contexto,
+        "saida_multivars": saida_multivars,
         "template": template,
     }
 
@@ -4778,19 +5294,26 @@ def auto_learn_and_add_block(entrada_texto: str, entrada_reacao: str, entrada_co
         "entrada": {
             "texto": entrada_texto,
             "reacao": entrada_reacao,
-            "contexto": entrada_contexto,
-            "pensamento_interno": entrada_pensamento,
+            "contexto": entrada_contexto or "Aprendizado autônomo",
+            "pensamento_interno": entrada_pensamento or default_pensamento or "Autocorreção do Adam",
+            "Multivars_Entrada": parsed.get("entrada_multivars", []),
         },
         "saidas": [
             {
-                "textos": [parsed["saida_texto"]],
-                "reacao": parsed["saida_reacao"],
-                "contexto": parsed["saida_contexto"],
+                "textos": [parsed["saida_texto"] or entrada_texto],
+                "reacao": parsed["saida_reacao"] or "🤖",
+                "contexto": parsed["saida_contexto"] or "Aprendido autonomamente",
+                "Multivars_Saída": parsed.get("saida_multivars", []),
             }
         ],
-        "Multivars_Entrada": [],
-        "Multivars_Saída": [],
     }
+
+    if not is_concrete_block(bloco):
+        bloco["entrada"]["contexto"] = entrada_contexto or "Aprendizado autônomo com correção"
+        bloco["entrada"]["pensamento_interno"] = entrada_pensamento or default_pensamento or "Autocorreção do Adam"
+        bloco["saidas"][0]["contexto"] = f"Correção autônoma: {bloco['entrada']['contexto']}"
+        bloco["saidas"][0]["reacao"] = parsed.get("saida_reacao") or "🤖"
+        bloco["meta"] = {"self_correction": True, "source": "autonomous_learning"}
 
     memoria["IM"][dominio]["blocos"].append(bloco)
     st.session_state.memoria = memoria
@@ -4800,6 +5323,34 @@ def auto_learn_and_add_block(entrada_texto: str, entrada_reacao: str, entrada_co
     st.session_state.alnulu_cache = build_alnulu_cache(memoria)
 
     return bloco, parsed["saida_texto"], parsed["saida_reacao"], parsed["saida_contexto"]
+
+
+def get_learning_status_summary() -> dict:
+    """Resumo do estado de aprendizagem do Adam com os pesos 66/12/23."""
+    reinforcements = st.session_state.get("reinforcements", {})
+    if not reinforcements:
+        return {
+            "creator_weight": 0.66,
+            "user_weight": 0.12,
+            "autonomy_weight": 0.23,
+            "autonomy_ready": False,
+            "blocks": 0,
+        }
+
+    blocks = 0
+    autonomy_ready = False
+    for reinforcement in reinforcements.values():
+        blocks += 1
+        if reinforcement.get("human_likes", 0) > 0 and reinforcement.get("creator") == "Thaís D' Mariano":
+            autonomy_ready = True
+
+    return {
+        "creator_weight": 0.66,
+        "user_weight": 0.12,
+        "autonomy_weight": 0.23,
+        "autonomy_ready": autonomy_ready,
+        "blocks": blocks,
+    }
 
 
 def main():
@@ -4850,6 +5401,11 @@ def main():
     
     st.title("🤖 Adam Lovely AI - Sistema INSEPA")
     st.markdown("### Interface de Chat com IA Avançada")
+    status = get_learning_status_summary()
+    st.info(
+        f"🧠 Peso do aprendizado: criadora 66% | usuários 12% | autonomia do Adam 23%. "
+        f"Autonomia pronta: {'sim' if status['autonomy_ready'] else 'não'} | blocos com reforço: {status['blocks']}"
+    )
     try:
         import torch
         torch_ver = torch.__version__
@@ -4869,6 +5425,8 @@ def main():
     # Sempre recarregar dados do arquivo para garantir sincronização
     st.session_state.memoria = carregar_json(ARQUIVO_MEMORIA, {"IM": {}})
     st.session_state.inconsciente = carregar_json(ARQUIVO_INCONSCIENTE, {"INCO": {}})
+    # Carregar léxico derivado do inconsciente (universo0 / universos específicos / dominios)
+    st.session_state.inconsciente_lexicon = load_inconsciente_lexicon(st.session_state.inconsciente)
     # Salva imediatamente ao entrar no site (garante persistência mesmo sem interação).
     auto_save_state()
     if "likes" not in st.session_state:
@@ -4886,8 +5444,6 @@ def main():
     with st.sidebar:
         st.header("Menu")
 
-        is_admin = st.session_state.get("admin", False)
-
         # Acesso público: apenas conversar e estatísticas
         if st.button("💬 Conversar"):
             st.session_state.menu = "conversar"
@@ -4901,17 +5457,16 @@ def main():
         st.checkbox("💾 Auto-save (gravar JSON automaticamente)", value=st.session_state.get("auto_save", True), key="auto_save")
         # Auto aprendizado: cria blocos automaticamente quando não há match
         st.checkbox("🎓 Auto-aprender (criar blocos automaticamente)", value=st.session_state.get("auto_learn", True), key="auto_learn")
-        # Persona/estilo de pensamento padrão para novos blocos
-        st.text_input(
-            "💭 Pensamento interno padrão (persona)",
-            value=st.session_state.get("default_pensamento", ""),
-            key="default_pensamento",
-        )
+        st.checkbox("🤖 Harness automático no chat (adm)", value=st.session_state.get("harness_auto_admin", True), key="harness_auto_admin")
+        st.checkbox("🧠 Modo autônomo do Adam (adm)", value=st.session_state.get("autonomous_mode", True), key="autonomous_mode")
+        st.checkbox("🛡️ Autorizar aprendizado abstrato (adm)", value=st.session_state.get("admin_override_learning", False), key="admin_override_learning")
 
-        # Acesso administrativo: tudo concentrado em Gerenciar IMs
-        if is_admin:
+        # Acesso administrativo: tudo concentrado em Gerenciar IMs e Testes
+        if st.session_state.get("admin", False):
             if st.button("🏗️ Gerenciar IMs (admin)"):
                 st.session_state.menu = "gerenciar"
+            if st.button("🧪 Testes ALNULU (admin)"):
+                st.session_state.menu = "testes"
 
         # Modo Administrador
         with st.expander("🔐 Modo Administrador"):
@@ -4920,10 +5475,18 @@ def main():
                 if senha_input == SENHA_ADMIN:
                     st.session_state.admin = True
                     st.success("✅ Acesso administrativo concedido!")
+                    st.session_state.menu = "conversar"
                 else:
                     st.error("❌ Senha incorreta.")
 
             if st.session_state.get("admin", False):
+                st.text_area(
+                    "💭 Pensamento interno padrão (persona) - admin",
+                    value=st.session_state.get("default_pensamento", ""),
+                    key="default_pensamento",
+                    help="Este pensamento interno é usado apenas para geração automática de blocos e só deve ser alterado por administrador.",
+                    height=100,
+                )
                 st.warning("⚠️ Reset limpa toda a sessão (histórico, mensagens, estados)")
                 confirmar_reset = st.checkbox("Confirmo que desejo limpar a sessão", key="confirm_reset")
                 if st.button("🧹 Resetar interface (limpar sessão)"):
@@ -5026,6 +5589,11 @@ def main():
                         submenu_testar_adam(memoria, inconsciente)
                     elif acao == "Evoluir IA":
                         submenu_testar_adam(memoria, inconsciente)
+    elif st.session_state.menu == "testes":
+        if not st.session_state.get("admin", False):
+            st.error("❌ Acesso negado. Use 'Modo Administrador' no menu lateral para acessar Testes ALNULU.")
+            return
+        submenu_testar_adam(memoria, inconsciente)
     elif st.session_state.menu == "conversar":
         st.write("Áudio disponível. Ouça a voz do personagem escolhido agora!")
         dom = prompt_dominio("conversar", memoria)
