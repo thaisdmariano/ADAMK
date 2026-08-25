@@ -1,0 +1,30 @@
+# Ambiente virtual -- nunca vai pro git, o Streamlit Cloud monta o dele via requirements.txt
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Segredos -- Mongo URI/senha, nunca commitado; configurado via Secrets do Streamlit Cloud
+.streamlit/secrets.toml
+
+# Backups locais e checkpoints do modelo -- grandes, regeneráveis, não precisam ir pro repo
+backup/
+*.pt
+
+# Dados locais -- o Mongo é a fonte real quando habilitado; essas cópias locais
+# não precisam ir pro repositório (evita levar conversas/opiniões sem querer)
+Adam_Lovely_memory.json
+Adam_Lovely_unconscious.json
+Adam_Lovely_opinioes.json
+adam_harness_report.json
+
+# Processos/logs locais (scripts de restart usados durante o desenvolvimento)
+*_pid.txt
+lovely_stdout.log
+lovely_stderr.log
+cdf_stdout.log
+cdf_stderr.log
+
+# Streamlit
+.streamlit/
+!.streamlit/config.toml
