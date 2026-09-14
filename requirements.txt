@@ -1,0 +1,13 @@
+streamlit
+numpy
+torch
+pymongo
+pyttsx3
+gtts
+edge-tts
+requests
+unidecode
+selenium
+pandas
+psutil
+plotly
