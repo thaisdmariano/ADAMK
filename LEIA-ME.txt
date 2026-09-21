@@ -1,0 +1,14 @@
+CEREBRO DO ADAM -- prototipo
+
+Como rodar:
+  1. Coloque o Adam_Lovely_memory.json nesta pasta, ao lado do cerebro_adam.py
+     (ele NAO vem junto de proposito: e o seu corpus pessoal).
+  2. pip install -r requirements.txt
+  3. streamlit run cerebro_adam.py
+
+Na primeira abertura ele treina uns 3 a 4 minutos e salva cerebro_adam_ckpt.pt.
+Depois abre direto. Cada vez que voce ensina um bloco novo pelo chat, ele
+retreina de novo.
+
+O que ele grava: quando voce ensina no chat ou confirma uma variacao, o
+Adam_Lovely_memory.json local e alterado (com backup antes).
