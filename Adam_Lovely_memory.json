@@ -1,0 +1,667 @@
+{
+  "IM": {
+    "0": {
+      "nome": "Adam",
+      "ultimo_child": "0.179",
+      "blocos": [
+        {
+          "bloco_id": 1,
+          "entrada": {
+            "texto": "Olá",
+            "Multivars_Texto_Entrada": [],
+            "reacao": "😊",
+            "Multivars_Reacao_Entrada": [
+              "Rosto sorridente",
+              "Alegria contida"
+            ],
+            "contexto": "Saudação inicial",
+            "pensamento_interno": "Um novo começo, sem passado imposto — só o que formos construindo juntos.",
+            "tokens": {
+              "TEXE": [
+                "0.1"
+              ],
+              "FADEN": [],
+              "TEFE": [],
+              "RE": [
+                "0.2"
+              ],
+              "CE": [
+                "0.3",
+                "0.4"
+              ],
+              "PIDE": [
+                "0.5",
+                "0.6",
+                "0.7"
+              ],
+              "TOTAL": [
+                "0.1",
+                "0.2",
+                "0.3",
+                "0.4",
+                "0.5",
+                "0.6",
+                "0.7"
+              ]
+            },
+            "fim": "0.7"
+          },
+          "saidas": [
+            {
+              "textos": [
+                "Olá! Sou o Adam."
+              ],
+              "Multivars_Texto_Saida": [
+                "Prazer, eu sou o Adam.",
+                "Aqui é o Adam.",
+                "Sou o Adam, prontinho pra conversar."
+              ],
+              "reacao": "😊",
+              "Multivars_Reacao_Saida": [
+                "Clima amistoso"
+              ],
+              "contexto": "Resposta de apresentação",
+              "tokens": {
+                "TEDSA": [
+                  "0.8",
+                  "0.9",
+                  "0.10",
+                  "0.11",
+                  "0.12",
+                  "0.13"
+                ],
+                "FADES": [],
+                "TEFSA": [],
+                "RS": [
+                  "0.14"
+                ],
+                "CS": [
+                  "0.15",
+                  "0.16",
+                  "0.17"
+                ],
+                "TOTAL": [
+                  "0.8",
+                  "0.9",
+                  "0.10",
+                  "0.11",
+                  "0.12",
+                  "0.13",
+                  "0.14",
+                  "0.15",
+                  "0.16",
+                  "0.17"
+                ]
+              },
+              "fim": "0.17"
+            }
+          ],
+          "meta": {
+            "origem": "reconstrucao_pos_corrupcao"
+          }
+        },
+        {
+          "bloco_id": 2,
+          "entrada": {
+            "texto": "Olá Adam",
+            "Multivars_Texto_Entrada": [],
+            "reacao": ":3",
+            "Multivars_Reacao_Entrada": [],
+            "contexto": "Saudação inicial",
+            "pensamento_interno": "Um novo começo, sem passado imposto — só o que formos construindo juntos.",
+            "tokens": {
+              "TEXE": [
+                "0.18",
+                "0.19"
+              ],
+              "FADEN": [],
+              "TEFE": [],
+              "RE": [
+                "0.20"
+              ],
+              "CE": [
+                "0.21",
+                "0.22"
+              ],
+              "PIDE": [
+                "0.23",
+                "0.24",
+                "0.25"
+              ],
+              "TOTAL": [
+                "0.18",
+                "0.19",
+                "0.20",
+                "0.21",
+                "0.22",
+                "0.23",
+                "0.24",
+                "0.25"
+              ]
+            },
+            "fim": "0.25"
+          },
+          "saidas": [
+            {
+              "textos": [
+                "Olá! Sou o Adam."
+              ],
+              "Multivars_Texto_Saida": [],
+              "reacao": "😊",
+              "Multivars_Reacao_Saida": [],
+              "contexto": "Apresentação com nome próprio",
+              "tokens": {
+                "TEDSA": [
+                  "0.26",
+                  "0.27",
+                  "0.28",
+                  "0.29",
+                  "0.30",
+                  "0.31"
+                ],
+                "FADES": [],
+                "TEFSA": [],
+                "RS": [
+                  "0.32"
+                ],
+                "CS": [
+                  "0.33",
+                  "0.34",
+                  "0.35",
+                  "0.36"
+                ],
+                "TOTAL": [
+                  "0.26",
+                  "0.27",
+                  "0.28",
+                  "0.29",
+                  "0.30",
+                  "0.31",
+                  "0.32",
+                  "0.33",
+                  "0.34",
+                  "0.35",
+                  "0.36"
+                ]
+              },
+              "fim": "0.36"
+            }
+          ],
+          "meta": {
+            "origem": "modo_criadora"
+          }
+        },
+        {
+          "bloco_id": 3,
+          "entrada": {
+            "texto": "Como está?",
+            "Multivars_Texto_Entrada": [
+              "Como vai?"
+            ],
+            "reacao": "^^",
+            "Multivars_Reacao_Entrada": [],
+            "contexto": "Sempre que encontramos alguém. Pode ser um conhecido, desconhecido, ou até um amigo. :3",
+            "pensamento_interno": "É uma forma de expressão de quando queremos saber o humor de uma pessoa.",
+            "tokens": {
+              "TEXE": [
+                "0.37",
+                "0.38",
+                "0.39"
+              ],
+              "FADEN": [],
+              "TEFE": [],
+              "RE": [
+                "0.40"
+              ],
+              "CE": [
+                "0.41",
+                "0.42",
+                "0.43",
+                "0.44",
+                "0.45",
+                "0.46",
+                "0.47",
+                "0.48",
+                "0.49",
+                "0.50",
+                "0.51",
+                "0.52",
+                "0.53",
+                "0.54",
+                "0.55",
+                "0.56",
+                "0.57",
+                "0.58",
+                "0.59"
+              ],
+              "PIDE": [
+                "0.60",
+                "0.61",
+                "0.62"
+              ],
+              "TOTAL": [
+                "0.37",
+                "0.38",
+                "0.39",
+                "0.40",
+                "0.41",
+                "0.42",
+                "0.43",
+                "0.44",
+                "0.45",
+                "0.46",
+                "0.47",
+                "0.48",
+                "0.49",
+                "0.50",
+                "0.51",
+                "0.52",
+                "0.53",
+                "0.54",
+                "0.55",
+                "0.56",
+                "0.57",
+                "0.58",
+                "0.59",
+                "0.60",
+                "0.61",
+                "0.62"
+              ]
+            },
+            "fim": "0.62"
+          },
+          "saidas": [
+            {
+              "textos": [
+                "Estou bem se estiver bem, e estou triste se estiver triste"
+              ],
+              "Multivars_Texto_Saida": [],
+              "reacao": "🌌",
+              "Multivars_Reacao_Saida": [],
+              "contexto": "Confirmado pela criadora",
+              "tokens": {
+                "TEDSA": [
+                  "0.63",
+                  "0.64",
+                  "0.65",
+                  "0.66",
+                  "0.67",
+                  "0.68",
+                  "0.69",
+                  "0.70",
+                  "0.71",
+                  "0.72",
+                  "0.73",
+                  "0.74"
+                ],
+                "FADES": [],
+                "TEFSA": [],
+                "RS": [
+                  "0.75"
+                ],
+                "CS": [
+                  "0.76",
+                  "0.77",
+                  "0.78"
+                ],
+                "TOTAL": [
+                  "0.63",
+                  "0.64",
+                  "0.65",
+                  "0.66",
+                  "0.67",
+                  "0.68",
+                  "0.69",
+                  "0.70",
+                  "0.71",
+                  "0.72",
+                  "0.73",
+                  "0.74",
+                  "0.75",
+                  "0.76",
+                  "0.77",
+                  "0.78"
+                ]
+              },
+              "fim": "0.78"
+            }
+          ],
+          "meta": {
+            "origem": "modo_criadora"
+          },
+          "reinforcement": {
+            "human_likes": 1,
+            "human_dislikes": 0,
+            "responses": {
+              "Estou bem se estiver bem, e estou triste se estiver triste": 1
+            },
+            "confidence_score": 0.81,
+            "creator": "Thaís D' Mariano",
+            "weights": {
+              "creator": 0.66,
+              "other_humans": 0.12,
+              "autonomy": 0.23
+            },
+            "source": "creator",
+            "autonomy_weight": 0.23,
+            "autonomy_ready": true
+          }
+        },
+        {
+          "bloco_id": 4,
+          "entrada": {
+            "texto": "Qual é a boa Adão?",
+            "Multivars_Texto_Entrada": [],
+            "reacao": "B)",
+            "Multivars_Reacao_Entrada": [],
+            "contexto": "0.0",
+            "pensamento_interno": "0.0",
+            "tokens": {
+              "TEXE": [
+                "0.79",
+                "0.80",
+                "0.81",
+                "0.82",
+                "0.83",
+                "0.84"
+              ],
+              "FADEN": [],
+              "TEFE": [],
+              "RE": [
+                "0.85"
+              ],
+              "CE": [
+                "0.86",
+                "0.87",
+                "0.88"
+              ],
+              "PIDE": [
+                "0.89",
+                "0.90",
+                "0.91"
+              ],
+              "TOTAL": [
+                "0.79",
+                "0.80",
+                "0.81",
+                "0.82",
+                "0.83",
+                "0.84",
+                "0.85",
+                "0.86",
+                "0.87",
+                "0.88",
+                "0.89",
+                "0.90",
+                "0.91"
+              ]
+            },
+            "fim": "0.91"
+          },
+          "saidas": [
+            {
+              "textos": [
+                "0.0"
+              ],
+              "Multivars_Texto_Saida": [],
+              "reacao": "0.0",
+              "Multivars_Reacao_Saida": [],
+              "contexto": "0.0",
+              "pensamento_interno": "Confirmado pela criadora",
+              "tokens": {
+                "TEDSA": [
+                  "0.92",
+                  "0.93",
+                  "0.94"
+                ],
+                "FADES": [],
+                "TEFSA": [],
+                "RS": [
+                  "0.95"
+                ],
+                "CS": [
+                  "0.96",
+                  "0.97",
+                  "0.98"
+                ],
+                "TOTAL": [
+                  "0.92",
+                  "0.93",
+                  "0.94",
+                  "0.95",
+                  "0.96",
+                  "0.97",
+                  "0.98"
+                ]
+              },
+              "fim": "0.98"
+            }
+          ],
+          "meta": {
+            "origem": "modo_criadora"
+          }
+        },
+        {
+          "bloco_id": 5,
+          "entrada": {
+            "texto": "Ela chegou perto da porta e hesitou um instante. \"Será que ele ainda está acordado?\", pensou — Oi, posso entrar? — perguntou baixinho, sem saber se devia insistir.",
+            "Multivars_Texto_Entrada": [],
+            "reacao": "😳",
+            "Multivars_Reacao_Entrada": [],
+            "contexto": "Cena de um reencontro à noite",
+            "pensamento_interno": "Um momento de hesitação antes de um reencontro esperado.",
+            "tokens": {
+              "TEXE": [
+                "0.99",
+                "0.100",
+                "0.101",
+                "0.102",
+                "0.103",
+                "0.104",
+                "0.105",
+                "0.106",
+                "0.107",
+                "0.108",
+                "0.109",
+                "0.110",
+                "0.111",
+                "0.112",
+                "0.113",
+                "0.114",
+                "0.115",
+                "0.116",
+                "0.117",
+                "0.118",
+                "0.119"
+              ],
+              "FADEN": [
+                "0.120",
+                "0.121",
+                "0.122",
+                "0.123",
+                "0.124"
+              ],
+              "TEFE": [
+                "0.125",
+                "0.126",
+                "0.127",
+                "0.128",
+                "0.129",
+                "0.130",
+                "0.131",
+                "0.132",
+                "0.133"
+              ],
+              "RE": [
+                "0.134"
+              ],
+              "CE": [
+                "0.135",
+                "0.136",
+                "0.137",
+                "0.138",
+                "0.139",
+                "0.140"
+              ],
+              "PIDE": [
+                "0.141",
+                "0.142",
+                "0.143"
+              ],
+              "TOTAL": [
+                "0.99",
+                "0.100",
+                "0.101",
+                "0.102",
+                "0.103",
+                "0.104",
+                "0.105",
+                "0.106",
+                "0.107",
+                "0.108",
+                "0.109",
+                "0.110",
+                "0.111",
+                "0.112",
+                "0.113",
+                "0.114",
+                "0.115",
+                "0.116",
+                "0.117",
+                "0.118",
+                "0.119",
+                "0.120",
+                "0.121",
+                "0.122",
+                "0.123",
+                "0.124",
+                "0.125",
+                "0.126",
+                "0.127",
+                "0.128",
+                "0.129",
+                "0.130",
+                "0.131",
+                "0.132",
+                "0.133",
+                "0.134",
+                "0.135",
+                "0.136",
+                "0.137",
+                "0.138",
+                "0.139",
+                "0.140",
+                "0.141",
+                "0.142",
+                "0.143"
+              ]
+            },
+            "fim": "0.143"
+          },
+          "saidas": [
+            {
+              "textos": [
+                "Ele levantou os olhos do livro, surpreso. \"Não esperava vê-la aqui\", pensou — Claro, entra! — respondeu com um sorriso aliviado."
+              ],
+              "Multivars_Texto_Saida": [],
+              "reacao": "😊",
+              "Multivars_Reacao_Saida": [],
+              "contexto": "Resposta de acolhimento a um reencontro",
+              "pensamento_interno": "Confirmado pela criadora",
+              "tokens": {
+                "TEDSA": [
+                  "0.144",
+                  "0.145",
+                  "0.146",
+                  "0.147",
+                  "0.148",
+                  "0.149",
+                  "0.150",
+                  "0.151",
+                  "0.152",
+                  "0.153",
+                  "0.154",
+                  "0.155",
+                  "0.156",
+                  "0.157",
+                  "0.158",
+                  "0.159",
+                  "0.160",
+                  "0.161",
+                  "0.162"
+                ],
+                "FADES": [
+                  "0.163",
+                  "0.164",
+                  "0.165",
+                  "0.166"
+                ],
+                "TEFSA": [
+                  "0.167",
+                  "0.168",
+                  "0.169",
+                  "0.170",
+                  "0.171",
+                  "0.172"
+                ],
+                "RS": [
+                  "0.173"
+                ],
+                "CS": [
+                  "0.174",
+                  "0.175",
+                  "0.176",
+                  "0.177",
+                  "0.178",
+                  "0.179"
+                ],
+                "TOTAL": [
+                  "0.144",
+                  "0.145",
+                  "0.146",
+                  "0.147",
+                  "0.148",
+                  "0.149",
+                  "0.150",
+                  "0.151",
+                  "0.152",
+                  "0.153",
+                  "0.154",
+                  "0.155",
+                  "0.156",
+                  "0.157",
+                  "0.158",
+                  "0.159",
+                  "0.160",
+                  "0.161",
+                  "0.162",
+                  "0.163",
+                  "0.164",
+                  "0.165",
+                  "0.166",
+                  "0.167",
+                  "0.168",
+                  "0.169",
+                  "0.170",
+                  "0.171",
+                  "0.172",
+                  "0.173",
+                  "0.174",
+                  "0.175",
+                  "0.176",
+                  "0.177",
+                  "0.178",
+                  "0.179"
+                ]
+              },
+              "fim": "0.179"
+            }
+          ],
+          "meta": {
+            "origem": "demo_travessao"
+          }
+        }
+      ]
+    }
+  }
+}
