@@ -1,0 +1,12 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Dados pessoais e modelo treinado -- nunca vao pro git
+*.pt
+*.BACKUP_*.json
+Adam_Lovely_memory.json
+cerebro_adam_estado.json
+motor_emocional_registro.json
+*.tmp

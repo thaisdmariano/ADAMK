@@ -1,0 +1,33 @@
+CEREBRO DO ADAM -- prototipo
+
+Como rodar:
+  1. Coloque o Adam_Lovely_memory.json nesta pasta, ao lado do cerebro_adam.py
+     (ele NAO vem junto de proposito: e o seu corpus pessoal).
+  2. pip install -r requirements.txt
+  3. streamlit run cerebro_adam.py
+
+Na primeira abertura ele treina uns 3 a 4 minutos e salva cerebro_adam_ckpt.pt.
+Depois abre direto. Cada vez que voce ensina um bloco novo pelo chat, ele
+retreina de novo.
+
+Tres abas:
+  - Conversa: chat com o Adam. Ele responde do bloco mais parecido, ensina
+    quando nao sabe, e reconhece bloco incompleto (pede o campo que falta
+    em vez de criar um bloco novo).
+  - Cerebro (treino e mapa): sequencia de um bloco, retreinar, testar
+    continuacao, e o mapa 3D do cerebro.
+  - Temperatura emocional: registra cada campo (TEXE, RE, CE...) como
+    positivo/negativo/neutro, uma vez, reaproveitado em qualquer bloco
+    com o mesmo valor. Mostra a temperatura (Fervendo/Morno-Equilibrado-
+    Estavel/Esfriando/Gelo) e a trajetoria do bloco.
+
+O que ele grava: quando voce ensina no chat, confirma uma variacao, ou
+completa um campo, o Adam_Lovely_memory.json local e alterado (com backup
+antes). O registro de temperatura fica em motor_emocional_registro.json
+(tambem com backup antes de mudar).
+
+motor_emocional.py e o mesmo motor de temperatura, so que como app
+separado (streamlit run motor_emocional.py) -- os dois compartilham o
+mesmo motor_emocional_registro.json, entao o que voce registra num
+aparece no outro tambem. Nao e obrigatorio rodar os dois, e so uma
+segunda forma de acessar a mesma aba.
