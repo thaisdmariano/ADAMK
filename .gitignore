@@ -1,0 +1,14 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Dados pessoais -- nunca vao pro git
+*.BACKUP_*.json
+cerebro_adam_estado.json
+motor_emocional_registro.json
+*.tmp
+
+# 2026-09-28: Adam_Lovely_memory.json e cerebro_adam_ckpt.pt liberados de
+# propósito -- pedido direto da Thaís, pra Cloud não precisar retreinar do
+# zero. Ficam DENTRO desta pasta (nunca soltos no *.pt geral acima).
