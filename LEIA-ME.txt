@@ -1,0 +1,77 @@
+PROTÓTIPO DO ADAM -- pasta de teste (26/10/2026)
+
+Esta pasta é uma cópia separada do Adam, com as mudanças que ainda não foram
+para o Adam de verdade. Tudo o que você fizer aqui fica AQUI: ela tem os
+próprios arquivos de dados e o próprio banco no Mongo (insepa_prototipo_muro).
+O Adam real (pasta de cima, banco adam_lovely) não é tocado.
+
+
+COMO ABRIR
+  Dois cliques em  rodar_prototipo.bat
+  Ele abre em http://localhost:8604
+  Na primeira vez o cérebro treina por cerca de 1 minuto.
+
+
+O QUE TEM AQUI E NÃO TEM NO ADAM REAL
+
+  Cérebro
+  - O muro: cada bloco é um tijolo. Contexto = cimento (mesma região),
+    pensamento interno + identidade no índice mãe = limite do tijolo.
+    Bloco ainda sem contexto/pensamento fica num tijolo reservado.
+  - Trava de segurança: nenhuma palavra sai do próprio tijolo e dois tijolos
+    nunca se tocam. Se um treino abrir a trava, ele é descartado e refeito.
+  - O pensamento interno inteiro chega ao cérebro (o PIDE continua com só os
+    3 primeiros marcadores).
+  - ALNULU com a tabela original: letra acentuada vale a letra base.
+  - O Adam fala com a grafia exata do bloco e na norma do português do
+    Brasil, com a fala sempre entre travessões.
+
+  Motor emocional
+  - Entrada: texto e reação 15 cada, contexto 10, pensamento 30.
+  - Saída: texto e reação 15 cada, contexto 10, pensamento da saída 30.
+  - Entrada e saída com temperaturas separadas.
+  - Seis faixas: Gelo, Frio, Esfriando, Morno, Quente, Fervendo.
+  - Campo novo na saída: o pensamento da saída (criado pelo Adam no IDA,
+    só vale depois de você confirmar; nunca aparece na fala).
+
+  IDA (o espaço do Adam)
+  - Rascunhos feitos de frases inteiras de UM bloco, na ordem dos marcadores,
+    sem repetição.
+  - Livre só em 4 pontos: estrutura da resposta, contexto e intenção, quando
+    não sabe (palpite, sempre marcado) e decisão por probabilidade.
+  - Contexto só é emprestado se for detectado no bloco (cosseno acha,
+    Báskara confirma). Palpite nunca leva contexto.
+  - Confirmar: se o rascunho veio de um bloco que existe, COMPLETA esse
+    bloco; se não, cria um bloco novo.
+
+  Tela
+  - Aba 📦 Blocos: ver cada bloco do IM ou do IDA, entrada e saída lado a lado.
+  - ✏️ Editar: os 8 campos, as variações de texto e de reação, e apagar
+    bloco (com confirmação e backup).
+  - Rascunho do IDA pode ser editado antes de confirmar.
+
+
+BLOCOS DE TESTE (só nesta pasta)
+  Os blocos 1 a 9 são cópias dos seus. Os de 10 a 17 fui eu que escrevi, só
+  pra testar as funções:
+    10  O que é o IDA?                        -- completo
+    11  Como você aprende?                    -- completo (mesmo contexto do 10)
+    12  O que você faz quando não sabe algo?  -- completo (fala entre travessões)
+    13  Como você sabe o que eu sinto?        -- completo
+    14  O que é IDA?                          -- sem resposta: deve reconhecer o 10
+    15  Como você aprende coisas novas?       -- sem resposta: deve reconhecer o 11
+    16  O que é o IDA? (😐)                   -- sem resposta: reação diferente, fica sem contexto
+    17  Você consegue sonhar?                 -- sem resposta: palpite
+  Pode editar, apagar ou ensinar à vontade -- é pra isso que eles existem.
+
+
+O QUE AINDA NÃO ESTÁ BOM
+  - O reconhecimento pelo texto ainda não sabe quais palavras carregam o
+    assunto ("o que é o ... ?" pesa tanto quanto "IDA").
+  - Palpites podem ser fracos (estão sempre marcados como palpite).
+  - O app separado motor_emocional.py ainda usa as faixas e os pesos antigos.
+  - Livro de Lux: em pausa.
+
+
+SE QUISER VOLTAR TUDO AO COMEÇO
+  Em backups\ tem cópias dos dados de antes de cada rodada de blocos de teste.
