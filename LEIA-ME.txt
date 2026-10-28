@@ -1,0 +1,19 @@
+ADAM -- PROTÓTIPO (futuro Adam beta) -- pacote para o GitHub / Streamlit Cloud
+28/10/2026
+
+Subir TODOS os arquivos desta pasta para o repositório (substituindo os antigos).
+
+No Streamlit Cloud:
+  Main file path:  persona_adam.py
+  Secrets:         MONGO_URI = "<o mesmo endereço do Mongo da nuvem>"
+  Depois: Manage app -> Reboot app
+
+O protótipo usa SEMPRE o banco "insepa_prototipo_muro" no Mongo -- nunca o
+"adam_lovely" do Adam real, mesmo que os Secrets tenham outro MONGO_DB.
+
+Os dados de verdade ficam no Mongo da nuvem. Os .json daqui são só a cópia de
+segurança, usada se o Mongo estiver fora do ar. O cerebro_adam_ckpt.pt é o
+cérebro já treinado: com ele o app abre sem treinar do zero, e cada dado novo
+é só acoplado (alguns segundos).
+
+Nesta pasta NÃO tem senha. Nunca suba a pasta .streamlit.
