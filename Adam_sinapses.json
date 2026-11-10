@@ -1,0 +1,109 @@
+{
+  "intencao": {
+    "p:3-15-14-19-5-7-21-5": {
+      "pergunta": 0.0111
+    },
+    "p:-13-5": {
+      "pergunta": 0.0111
+    },
+    "p:15-21--22-9-18": {
+      "pergunta": 0.0111
+    },
+    "p:1-4-1--13": {
+      "pergunta": 0.017
+    },
+    "ini:3-15-14-19-5-7-21-5": {
+      "pergunta": 0.0111
+    },
+    "par:3-15-14-19-5-7-21-5_-13-5": {
+      "pergunta": 0.0111
+    },
+    "par:-13-5_15-21--22-9-18": {
+      "pergunta": 0.0111
+    },
+    "par:15-21--22-9-18_1-4-1--13": {
+      "pergunta": 0.0111
+    },
+    "fim:?": {
+      "pergunta": 0.017
+    },
+    "p:-22-15-3-5": {
+      "pergunta": 0.0059
+    },
+    "p:19-1-2-5": {
+      "pergunta": 0.0059
+    },
+    "p:15": {
+      "pergunta": 0.0059
+    },
+    "p:17-21-5": {
+      "pergunta": 0.0059
+    },
+    "p:5": {
+      "pergunta": 0.0059
+    },
+    "p:1": {
+      "pergunta": 0.0059
+    },
+    "p:12-21-1": {
+      "pergunta": 0.0059
+    },
+    "ini:1-4-1--13": {
+      "pergunta": 0.0059
+    },
+    "par:1-4-1--13_-22-15-3-5": {
+      "pergunta": 0.0059
+    },
+    "par:-22-15-3-5_19-1-2-5": {
+      "pergunta": 0.0059
+    },
+    "par:19-1-2-5_15": {
+      "pergunta": 0.0059
+    },
+    "par:15_17-21-5": {
+      "pergunta": 0.0059
+    },
+    "par:17-21-5_5": {
+      "pergunta": 0.0059
+    },
+    "par:5_1": {
+      "pergunta": 0.0059
+    },
+    "par:1_12-21-1": {
+      "pergunta": 0.0059
+    }
+  },
+  "assunto": {},
+  "grafia": {
+    "p:3-15-14-19-5-7-21-5": "consegue",
+    "p:-13-5": "me",
+    "p:15-21--22-9-18": "ouvir",
+    "p:1-4-1--13": "adam",
+    "ini:3-15-14-19-5-7-21-5": "começa com “consegue”",
+    "par:3-15-14-19-5-7-21-5_-13-5": "consegue me",
+    "par:-13-5_15-21--22-9-18": "me ouvir",
+    "par:15-21--22-9-18_1-4-1--13": "ouvir adam",
+    "fim:?": "termina em “?”",
+    "p:-22-15-3-5": "você",
+    "p:19-1-2-5": "sabe",
+    "p:15": "o",
+    "p:17-21-5": "que",
+    "p:5": "é",
+    "p:1": "a",
+    "p:12-21-1": "lua",
+    "ini:1-4-1--13": "começa com “adam”",
+    "par:1-4-1--13_-22-15-3-5": "adam você",
+    "par:-22-15-3-5_19-1-2-5": "você sabe",
+    "par:19-1-2-5_15": "sabe o",
+    "par:15_17-21-5": "o que",
+    "par:17-21-5_5": "que é",
+    "par:5_1": "é a",
+    "par:1_12-21-1": "a lua"
+  },
+  "historico": [
+    {
+      "quando": "2026-11-08 01:44",
+      "o_que": "me consertei: os blocos [1, 2, 3, 4, 5, 18] não saíam como você escreveu -- precisei treinar o cérebro inteiro de novo; agora todos saem certos"
+    }
+  ]
+}
