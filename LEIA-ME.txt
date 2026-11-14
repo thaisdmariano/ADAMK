@@ -1,0 +1,33 @@
+ADAM BETA -- versão "chave e cadeado" -- pacote para o GitHub / Streamlit Cloud
+14/11/2026
+
+Subir TODOS os arquivos desta pasta para o repositório (substituindo os antigos).
+
+No Streamlit Cloud:
+  Main file path:  persona_adam.py
+  Secrets:         MONGO_URI = "<o mesmo endereço do Mongo da nuvem>"
+  Depois: Manage app -> Reboot app
+  (o requirements.txt agora tem python-docx e pypdf: o Cloud instala sozinho no reboot)
+
+O protótipo usa SEMPRE o banco "insepa_prototipo_muro" no Mongo -- nunca o
+"adam_lovely" do Adam real, mesmo que os Secrets tenham outro MONGO_DB.
+
+O que esta versão tem de novo:
+  - Cofre (Camada 4, chave e cadeado): a chave é cada palavra no seu marcador,
+    em ordem, com toda a pontuação, mais a emoção. Só a chave exata abre a
+    porta dela. Chave que quase bate: ele diz por que não abriu e pergunta
+    "acertei?"; um quase confirmado vira um BLOCO NOVO em estudo, nunca
+    variação do outro.
+  - Variação (var de palavra / multivar de frase) só depois da chave 100%.
+  - Blocos com objetivo: criar história, guardar texto, alimentar o corpus.
+  - Um "não" abre a edição; só vira definitivo depois de muitas correções.
+  - Os palpites só abrem quando ela pede (bloco que ativa isso).
+  - O chat aceita anexo: .txt, .md, .docx (Word), .pdf, .odt.
+  - Lições da criadora (as palavras dela) guiando cada função.
+
+Os dados de verdade ficam no Mongo da nuvem. Os .json daqui são só a cópia de
+segurança, usada se o Mongo estiver fora do ar. O cerebro_adam_ckpt.pt é o
+cérebro já treinado: com ele o app abre sem treinar do zero, e cada dado novo
+é só acoplado (alguns segundos).
+
+Nesta pasta NÃO tem senha. Nunca suba a pasta .streamlit.
