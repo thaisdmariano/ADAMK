@@ -1,0 +1,83 @@
+ADAM BETA -- versão "chave e cadeado" -- pacote para o GitHub / Streamlit Cloud
+14/11/2026 · atualizado em 26/11/2026 (210 blocos)
+
+Novo em 26/11:
+  - Sem a chave exata, nenhum bloco pronto fala: ele diz "Hm... Não conheço bem
+    essa expressão" e mostra como entendeu cada parte (pelos blocos: contexto,
+    pensamento, emoção) e pergunta "Acertei?". O detalhe fica no "O que ele
+    entendeu".
+  - A intenção vem do contexto, do pensamento e da emoção dos blocos (não mais
+    de uma tabela de palavras).
+  - Blocos de função também só abrem por chave: os gatilhos pela frase dela
+    (texto + reação) e as falas pela chave interna (cofre das falas).
+  - Uma chave, uma porta: se a mesma chave estiver em mais de um bloco, abre o
+    que vem logo depois, nos marcadores, da última fala dele.
+  - O app mostra se o Mongo está conectado (🟢) ou não (🔴).
+
+Novo em 24/11:
+  - Barra de carregamento: ao ler um conto/livro (página por página no PDF),
+    ao separar os trechos, no "pode guardar todos" (trecho por trecho) e
+    quando o cérebro aprende os blocos novos. Na conversa normal ela não aparece.
+  - Contos e livros do Codex Lux entram por blocos de função: cada fala é um
+    bloco, e a saída de uma fala é a fala seguinte. O título fica no
+    pensamento, com o significado dele. "Parte 1/2" ou números romanos ligam
+    as partes.
+  - O cérebro treinado também fica salvo no Mongo: depois de um reboot do
+    Cloud, ele carrega de lá sem retreinar.
+  - Temperatura: todo campo preenchido soma o peso dele (texto 15, reação 15,
+    contexto 10 mesmo neutro, pensamento 30). Só soma, nunca divide.
+
+Novo em 17/11:
+  - Regra de ouro: a pontuação conta sempre na chave; a versão sem pontuação de
+    cada frase é multivar do próprio bloco (nunca chave de outro bloco).
+  - A chave é Texto + Reação. Reação: original (ex. 😊), var (carinha, ex. :3,
+    ^-^, >.>) e multivar (emoção escrita, ex. *Alegria gentil*). Depois da chave
+    certinha, ele pergunta pelas variações do texto e da reação.
+  - O "quase" virou blocos de função, em linguagem de conversa: "Acertou sim."
+    (positivo) e "Não era isso que eu queria dizer" (negativo, abre a correção)
+    são blocos diferentes. "salva isso" gera um bloco de aprendizado.
+  - Variações não têm marcadores: moram no bloco delas e herdam o contexto e o
+    pensamento dele.
+  - O app importa o pandas logo no começo (evita o erro "partially initialized").
+
+Novo em 16/11:
+  - A emoção pode vir em qualquer posição da frase (emoji, :3, html, *reação
+    escrita*): ela vai pro marcador dela, e a chave é a mesma.
+  - Duas emoções juntas (":3 Olá Adam ^^") são quebra de protocolo: não abrem
+    uma chave de uma emoção só.
+  - "****" (asteriscos soltos) é ruído: ignorado.
+  - A pontuação fica guardada no bloco, mas não muda a chave: a chave é cada
+    palavra no seu marcador + a emoção. >:( é lido como uma reação inteira.
+  - Quando a chave quase bate, ele diz exatamente o que difere.
+  - A chave mostrada é só texto + reação (ex.: bloco 2 = 0.18…0.20).
+
+Subir TODOS os arquivos desta pasta para o repositório (substituindo os antigos).
+
+No Streamlit Cloud:
+  Main file path:  persona_adam.py
+  Secrets:         MONGO_URI = "<o mesmo endereço do Mongo da nuvem>"
+  Depois: Manage app -> Reboot app
+  (o requirements.txt agora tem python-docx e pypdf: o Cloud instala sozinho no reboot)
+
+O protótipo usa SEMPRE o banco "insepa_prototipo_muro" no Mongo -- nunca o
+"adam_lovely" do Adam real, mesmo que os Secrets tenham outro MONGO_DB.
+
+O que esta versão tem de novo:
+  - Cofre (Camada 4, chave e cadeado): a chave é cada palavra no seu marcador,
+    em ordem, com toda a pontuação, mais a emoção. Só a chave exata abre a
+    porta dela. Chave que quase bate: ele diz por que não abriu e pergunta
+    "acertei?"; um quase confirmado vira um BLOCO NOVO em estudo, nunca
+    variação do outro.
+  - Variação (var de palavra / multivar de frase) só depois da chave 100%.
+  - Blocos com objetivo: criar história, guardar texto, alimentar o corpus.
+  - Um "não" abre a edição; só vira definitivo depois de muitas correções.
+  - Os palpites só abrem quando ela pede (bloco que ativa isso).
+  - O chat aceita anexo: .txt, .md, .docx (Word), .pdf, .odt.
+  - Lições da criadora (as palavras dela) guiando cada função.
+
+Os dados de verdade ficam no Mongo da nuvem. Os .json daqui são só a cópia de
+segurança, usada se o Mongo estiver fora do ar. O cerebro_adam_ckpt.pt é o
+cérebro já treinado: com ele o app abre sem treinar do zero, e cada dado novo
+é só acoplado (alguns segundos).
+
+Nesta pasta NÃO tem senha. Nunca suba a pasta .streamlit.
